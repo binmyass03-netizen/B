@@ -1,0 +1,1967 @@
+-- ╔═══════════════════════════════════════════════════════════════════════╗
+-- ║  SAB ANTICHEAT CONTAINER v3 — AUTO-MANAGED BY sab_replacer.py        ║
+-- ║  AC patches + Net Module Proxy (game require) + SyncWrapper          ║
+-- ║  Uses require(game's Net module) for direct remote resolution.       ║
+-- ║  Each patch is flag-gated — first script applies, rest reuse.        ║
+
+
+-- ╚═══════════════════════════════════════════════════════════════════════╝
+
+-- Gate: Only Steal a Brainrot places
+local SAB_IDS = {[109983668079237]=true,[85621847059032]=true,[99606176102979]=true}
+if not SAB_IDS[game.PlaceId] then return end
+
+if not game:IsLoaded() then game.Loaded:Wait() end
+
+local RS = game:GetService("ReplicatedStorage")
+local _S = getgenv().__ASTRO_SYNC or {}
+getgenv().__ASTRO_SYNC = _S
+
+
+-- ═══════════════════════════════════════════════════════════════
+-- FAST PATH — Skip heavy init if container already ran
+-- Subsequent scripts jump straight to exports (saves ~500 lines of parsing)
+
+
+-- ═══════════════════════════════════════════════════════════════
+if not _S._CONTAINER_READY then
+
+
+-- ═══════════════════════════════════════════════════════════════
+-- EXECUTOR COMPATIBILITY SHIMS — Universal executor support
+-- Resolves intrinsics from globals, debug.*, or alternative names.
+-- Supports: Synapse X, Script-Ware, KRNL, Fluxus, Seliware, etc.
+
+
+-- ═══════════════════════════════════════════════════════════════
+do
+    local _dbg = type(debug) == "table" and debug or {}
+    local function _res(...)
+        for i = 1, select("#", ...) do
+            local v = select(i, ...)
+            if type(v) == "function" then return v end
+        end
+        return nil
+    end
+    _S._X = {
+        getupvalues   = _res(getupvalues, _dbg.getupvalues),
+        setupvalue    = _res(setupvalue, _dbg.setupvalue),
+        getconstants  = _res(getconstants, _dbg.getconstants),
+        setconstant   = _res(setconstant, _dbg.setconstant),
+        getprotos     = _res(getprotos, _dbg.getprotos),
+        getgc         = _res(getgc, _dbg.getgc),
+        getrenv       = _res(getrenv),
+        getconnections = _res(getconnections, get_signal_connections),
+        isexecutorclosure = _res(isexecutorclosure, checkclosure, is_synapse_function, isourclosure),
+        newcclosure   = _res(newcclosure) or function(fn) return fn end,
+    }
+end
+
+
+-- ═══════════════════════════════════════════════════════════════
+-- NET MODULE PATCHER — Neuter ALL executor-detection vectors
+-- Based on dump analysis: getfenv/setfenv are stored as BOTH
+-- string constants AND function value constants, plus in upvalue
+-- tables. Also patches identifyexecutor/iscclosure/islclosure.
+
+
+-- ═══════════════════════════════════════════════════════════════
+if not getgenv()._net_getfenv_patched then
+    getgenv()._net_getfenv_patched = true
+    -- Block-scoped aliases for compat shims
+    local _getrenv = _S._X.getrenv
+    local _newcclosure = _S._X.newcclosure
+    local _getupvalues = _S._X.getupvalues
+    local _setupvalue = _S._X.setupvalue
+    local _getconstants = _S._X.getconstants
+    local _setconstant = _S._X.setconstant
+    local _getprotos = _S._X.getprotos
+    local _getgc = _S._X.getgc
+    local _isexecutorclosure = _S._X.isexecutorclosure
+
+    local Packages = game:GetService("ReplicatedStorage"):FindFirstChild("Packages")
+    local NetFolder = Packages and Packages:FindFirstChild("Net")
+    local NetScript = NetFolder and NetFolder:FindFirstChildWhichIsA("ModuleScript", true)
+    local renvGetfenv, renvSetfenv
+    if _getrenv then
+        pcall(function()
+            local renv = _getrenv()
+            renvGetfenv = renv.getfenv
+            renvSetfenv = renv.setfenv
+        end)
+    end
+
+    if NetScript then
+        -- Harmless dummies — no errors, just return nothing useful
+        local dummyGetfenv = _newcclosure(function() return {} end)
+        local dummySetfenv = _newcclosure(function() end)
+        local dummyIdentify = _newcclosure(function() return nil end)
+        local dummyIscclosure = _newcclosure(function() return false end)
+
+        local patched = 0
+
+        -- Check if a value is getfenv (executor or renv)
+        local function isGfe(v)
+            return type(v) == "function" and (v == getfenv or v == renvGetfenv)
+        end
+        -- Check if a value is setfenv
+        local function isSfe(v)
+            return type(v) == "function" and (v == setfenv or v == renvSetfenv)
+        end
+
+        -- Suspicious constant strings to kill
+        local killStrings = {
+            ["getfenv"] = true,
+            ["setfenv"] = true,
+            ["identifyexecutor"] = true,
+            ["isexecutorclosure"] = true,
+            ["iscclosure"] = true,
+            ["islclosure"] = true,
+        }
+
+        -- ── Patch a single function: upvalues + constants + protos ──
+        local _patchVisited = {}
+        local function patchFunc(fn)
+            if _patchVisited[fn] then return end
+            _patchVisited[fn] = true
+            -- UPVALUES: direct refs and table entries
+            if _getupvalues and _setupvalue then pcall(function()
+                local ups = _getupvalues(fn)
+                if not ups then return end
+                for i, v in pairs(ups) do
+                    -- Direct getfenv/setfenv upvalue
+                    if isGfe(v) then
+                        pcall(function() _setupvalue(fn, i, dummyGetfenv) end)
+                        patched = patched + 1
+                    elseif isSfe(v) then
+                        pcall(function() _setupvalue(fn, i, dummySetfenv) end)
+                        patched = patched + 1
+                    end
+                    -- Table upvalue: scan for getfenv/setfenv inside
+                    if type(v) == "table" then
+                        for tk, tv in pairs(v) do
+                            if isGfe(tv) then
+                                v[tk] = dummyGetfenv
+                                patched = patched + 1
+                            elseif isSfe(tv) then
+                                v[tk] = dummySetfenv
+                                patched = patched + 1
+                            end
+                        end
+                    end
+                end
+            end) end
+
+            -- CONSTANTS: both string names AND function value refs
+            if _getconstants then pcall(function()
+                local consts = _getconstants(fn)
+                if not consts then return end
+                for i, c in pairs(consts) do
+                    -- String constants: "getfenv", "identifyexecutor", etc
+                    if type(c) == "string" and killStrings[c] then
+                        if _setconstant then pcall(function() _setconstant(fn, i, "____dead") end) end
+                        patched = patched + 1
+                    end
+                    -- Function value constants: the actual getfenv/setfenv refs
+                    if isGfe(c) then
+                        if _setconstant then pcall(function() _setconstant(fn, i, dummyGetfenv) end) end
+                        patched = patched + 1
+                    elseif isSfe(c) then
+                        if _setconstant then pcall(function() _setconstant(fn, i, dummySetfenv) end) end
+                        patched = patched + 1
+                    end
+                end
+            end) end
+
+            -- PROTOS: recurse into inner functions
+            if _getprotos then pcall(function()
+                local protos = _getprotos(fn)
+                if protos then
+                    for _, proto in ipairs(protos) do
+                        patchFunc(proto)
+                    end
+                end
+            end) end
+        end
+
+        -- ── Pass 1: Walk require()'d module exports ──
+        pcall(function()
+            local ok, mod = pcall(require, NetScript)
+            if ok and mod and type(mod) == "table" then
+                for key, fn in pairs(mod) do
+                    if type(fn) == "function" then
+                        local isExec = false
+                        if _isexecutorclosure then pcall(function() isExec = _isexecutorclosure(fn) end) end
+                        if not isExec then patchFunc(fn) end
+                    end
+                end
+            end
+        end)
+
+        -- ── Pass 2: GC scan for closures belonging to Net ──
+        if _getgc then pcall(function()
+            for _, obj in ipairs(_getgc(true)) do
+                if type(obj) == "function" then
+                    local isExec = false
+                    if _isexecutorclosure then pcall(function() isExec = _isexecutorclosure(obj) end) end
+                    if not isExec then
+                        local src = nil
+                        pcall(function() src = getfenv(obj).script end)
+                        if src == NetScript then
+                            patchFunc(obj)
+                        end
+                    end
+                end
+            end
+        end) end
+
+        warn("[SAB Container] Net module patched — " .. patched .. " refs neutralized (getfenv/setfenv/identifyexecutor/iscclosure/islclosure)")
+    else
+        warn("[SAB Container] NetScript NOT FOUND — cannot patch")
+    end
+end
+
+
+-- ═══════════════════════════════════════════════════════════════
+-- VERBOSE LOGGING
+
+
+-- ═══════════════════════════════════════════════════════════════
+local VERBOSE = false -- Set to true to enable container debug logging
+local function vLog(...)
+    if VERBOSE then warn("[SAB Container]", ...) end
+end
+
+
+-- ═══════════════════════════════════════════════════════════════
+-- [PATCHES 0-1] Anti-cheat neutralization (flag-gated, idempotent)
+
+
+-- ═══════════════════════════════════════════════════════════════
+if not _S.ALL_PATCHES_APPLIED then
+    local _getconnections = _S._X.getconnections
+
+    -- [Patch 0] Destroy QuitsAntiCheat scripts
+    if not _S.AC_CLEANUP_DONE then
+        pcall(function()
+            for _, n in ipairs({"QuitsAntiCheatChecker", "QuitsAntiCheatLocal"}) do
+                for _, p in ipairs({
+                    game:GetService("Players").LocalPlayer.PlayerScripts,
+                    game:GetService("StarterPlayer").StarterPlayerScripts
+                }) do
+                    local c = p:FindFirstChild(n)
+                    if c then c:Destroy() end
+                end
+            end
+        end)
+        _S.AC_CLEANUP_DONE = true
+        _S.AC_CLEANUP_BY = _S.AC_CLEANUP_BY or "CONTAINER"
+    end
+
+    -- [Patch 1] Desync temp patch killer — destroy position correction remotes
+    if not _S.DESYNC_PATCH_KILLED then
+        pcall(function()
+            local df = RS:FindFirstChild("Desync")
+            if df then
+                for _, c in ipairs(df:GetChildren()) do
+                    if c:IsA("RemoteEvent") or c:IsA("UnreliableRemoteEvent") then
+                        pcall(function()
+                            if _getconnections then
+                                for _, cn in pairs(_getconnections(c.OnClientEvent)) do pcall(function() cn:Disable() end) end
+                            end
+                            c:Destroy()
+                        end)
+                    end
+                end
+            end
+        end)
+        pcall(function()
+            RS.DescendantAdded:Connect(function(d)
+                if d.Name == "UnreliableRemoteEvent" and d.Parent and d.Parent.Name == "Desync" then
+                    task.defer(function()
+                        pcall(function()
+                            if _getconnections then
+                                for _, cn in pairs(_getconnections(d.OnClientEvent)) do cn:Disable() end
+                            end
+                            d:Destroy()
+                        end)
+                    end)
+                end
+            end)
+        end)
+        _S.DESYNC_PATCH_KILLED = true
+    end
+
+    _S.ALL_PATCHES_APPLIED = true
+end
+
+
+-- ═══════════════════════════════════════════════════════════════
+-- DUAL-FIRE ANTI-HOOK MAP
+
+
+-- ═══════════════════════════════════════════════════════════════
+if not _S.DUAL_FIRE_MAP then
+    _S.DUAL_FIRE_MAP = {
+        AnimalController = {
+            remote = "9ceddac0-775c-4449-ae9e-6fff3792c8a1",
+            shadowUUID = "3d3ab689-343b-4632-8337-3ee5eb6e505e",
+            primaryUUID = "3ce04c41-b21f-4b2a-b93a-037427eac16d",
+            timeOffset = 43,
+        },
+        PlotClient = {
+            remote = "3ba148c9-7ed6-4675-93f8-9f7c356a2c54",
+            shadowUUID = "cda5c764-d4e3-45c4-94e4-53a538347590",
+            primaryUUID = "8c852fbf-d542-4ef4-aa28-612e24db8d4a",
+            timeOffset = 31,
+        },
+        AnimalPrompt = {
+            remote = "f40f7d9e-2f0d-4167-b250-899273f46874",
+            shadowUUID = "68c86eb7-eb7e-4b4d-96ae-cf7cd847c5b0",
+            primaryUUID = "07b9cc25-2a1f-4a26-a0ec-f2fab578d8bd",
+            timeOffset = 124,
+        },
+        PlotCoinCollect = {
+            remote = "07205405-20ce-4948-b0dd-36b680f698e9",
+            shadowUUID = "0fca7b2e-7e6b-40c5-bb10-4469a82a9ab3",
+            primaryUUID = "0fca7b2e-7e6b-40c5-bb10-4469a82a9ab3",
+            timeOffset = 0,
+        },
+    }
+    _S.BAN_REMOTE_UUID = "92e5a494-0ab4-4c4e-ae6b-96e5f4a2a698"
+    _S.FLAG_REMOTE_PATH = "RE/InventoryService/Sort"
+end
+
+
+-- ═══════════════════════════════════════════════════════════════
+-- NET MODULE PROXY — Game's own Net module for remote resolution
+-- require(Net module) is SAFE and does NOT trigger anticheat.
+-- The game's resolver handles HMAC-SHA256 hashing internally.
+
+
+-- ═══════════════════════════════════════════════════════════════
+if not _S.Net then
+    do
+        local _GameNet = nil   -- The game's Net module (RemoteEvent/RemoteFunction/etc.)
+        local _NetFolder = nil -- ReplicatedStorage.Packages.Net (parent of all remotes)
+        local _cache = {}
+
+        local function nLog(...) vLog("[Net]", ...) end
+
+        local function isHash(str)
+            return type(str) == "string" and #str == 64 and str:match("^%x+$") ~= nil
+        end
+
+        local function isUUID(str)
+            return type(str) == "string" and str:match("^%x%x%x%x%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%x%x%x%x%x%x%x%x$") ~= nil
+        end
+
+        -- ── Require the game's own Net module (safe, no AC trigger) ──
+        pcall(function()
+            local Packages = RS:FindFirstChild("Packages")
+            if not Packages then return end
+            _NetFolder = Packages:FindFirstChild("Net")
+            if not _NetFolder then return end
+            local modScript = _NetFolder:FindFirstChildWhichIsA("ModuleScript", true)
+            if modScript then
+                local ok, mod = pcall(require, modScript)
+                if ok and mod then _GameNet = mod end
+            end
+        end)
+
+        if _GameNet then
+            nLog("✓ Game Net module loaded")
+        else
+            nLog("⚠ Game Net module NOT loaded — direct folder lookup only")
+        end
+
+        -- ── Resolve a remote by path using game's resolver + folder fallback ──
+        local function resolveRemote(resolverName, prefix, path)
+            local ck = prefix .. path
+            if _cache[ck] then
+                local ok, p = pcall(function() return _cache[ck].Parent end)
+                if ok and p then return _cache[ck] end
+                _cache[ck] = nil
+            end
+            local inst = nil
+            -- Strategy 1: Game resolver (handles HMAC internally) — names + UUIDs
+            if _GameNet and not isHash(path) then
+                local resolver = _GameNet[resolverName]
+                if resolver then
+                    local ok, r = pcall(resolver, _GameNet, path)
+                    if ok and r then inst = r end
+                end
+            end
+            -- Strategy 2: Direct folder child lookup (hashes, UUIDs, readable)
+            if not inst and _NetFolder then
+                pcall(function() inst = _NetFolder:FindFirstChild(ck) end)
+                if not inst then pcall(function() inst = _NetFolder:FindFirstChild(path) end) end
+            end
+            if inst then
+                _cache[ck] = inst
+                vLog(string.format("[Net] ✓ Resolved %s%s → %s", prefix, path, tostring(inst)))
+            else
+                vLog(string.format("[Net] ✗ Failed to resolve %s%s", prefix, path))
+            end
+            return inst
+        end
+
+        -- ══════════════ Net API ══════════════
+
+        local NetAPI = {}
+
+        function NetAPI:RE(path) return resolveRemote("RemoteEvent", "RE/", path) end
+        function NetAPI:RF(path) return resolveRemote("RemoteFunction", "RF/", path) end
+        function NetAPI:URE(path) return resolveRemote("UnreliableRemoteEvent", "URE/", path) end
+        function NetAPI:RemoteEvent(path) return self:RE(path) end
+        function NetAPI:RemoteFunction(path) return self:RF(path) end
+        function NetAPI:UnreliableRemoteEvent(path) return self:URE(path) end
+
+        function NetAPI:UUID(uuid)
+            local ck = "UUID:" .. uuid
+            if _cache[ck] then
+                local ok, p = pcall(function() return _cache[ck].Parent end)
+                if ok and p then return _cache[ck] end
+                _cache[ck] = nil
+            end
+            if _NetFolder then
+                for _, pfx in ipairs({"RE/", "RF/", "URE/", ""}) do
+                    local inst; pcall(function() inst = _NetFolder:FindFirstChild(pfx .. uuid) end)
+                    if inst then _cache[ck] = inst; return inst end
+                end
+            end
+            return nil
+        end
+
+        function NetAPI:Fire(path, ...)
+            local r = self:RE(path)
+            if not r then nLog("✗ Fire — RE not found: " .. tostring(path)); return false end
+            local ok, err = pcall(r.FireServer, r, ...)
+            if not ok then nLog("✗ Fire error: " .. tostring(err)); return false end
+            return true
+        end
+
+        function NetAPI:Invoke(path, ...)
+            -- Use game's Invoke for names + UUIDs (does resolution + invocation)
+            if _GameNet and _GameNet.Invoke and not isHash(path) then
+                local ok, res = pcall(_GameNet.Invoke, _GameNet, path, ...)
+                if ok then return res end
+            end
+            local r = self:RF(path)
+            if not r then nLog("✗ Invoke — RF not found: " .. tostring(path)); return nil end
+            local ok, res = pcall(r.InvokeServer, r, ...)
+            return ok and res or nil
+        end
+
+        function NetAPI:Listen(path, callback)
+            -- Use game's Connect for names + UUIDs (does resolution + connection)
+            if _GameNet and _GameNet.Connect and not isHash(path) then
+                local ok, conn = pcall(_GameNet.Connect, _GameNet, path, callback)
+                if ok and conn then return conn end
+            end
+            local r = self:RE(path)
+            if not r then nLog("✗ Listen — RE not found: " .. tostring(path)); return nil end
+            local ok, conn = pcall(function() return r.OnClientEvent:Connect(callback) end)
+            return ok and conn or nil
+        end
+
+        function NetAPI:DualFire(systemName, ...)
+            local dfMap = _S.DUAL_FIRE_MAP
+            if not dfMap or not dfMap[systemName] then return false end
+            local info = dfMap[systemName]
+            local remote = self:UUID(info.remote)
+            if not remote then return false end
+            -- Guard: remote may have been destroyed since resolution
+            if not remote.Parent then nLog("✗ DualFire — remote destroyed: " .. tostring(info.remote)); return false end
+            local ok, now = pcall(function() return workspace:GetServerTimeNow() end)
+            if not ok then now = tick() end
+            local args = {...}
+            pcall(remote.FireServer, remote, now + info.timeOffset, info.shadowUUID, unpack(args))
+            pcall(remote.FireServer, remote, now + info.timeOffset, info.primaryUUID, unpack(args))
+            return true
+        end
+
+        function NetAPI:ClearCache() _cache = {} end
+        function NetAPI:GetNetFolder() return _NetFolder end
+        function NetAPI:GetGameNet() return _GameNet end
+
+        function NetAPI:DumpAll()
+            local results = {}
+            if not _NetFolder then return results end
+            pcall(function()
+                for _, child in ipairs(_NetFolder:GetChildren()) do
+                    pcall(function()
+                        if child:IsA("RemoteEvent") or child:IsA("RemoteFunction") or child:IsA("UnreliableRemoteEvent") then
+                            local rawName = child.Name
+                            local prefix, body = "", rawName
+                            if rawName:sub(1, 4) == "URE/" then
+                                prefix = "URE/"; body = rawName:sub(5)
+                            elseif rawName:sub(1, 3) == "RE/" or rawName:sub(1, 3) == "RF/" then
+                                prefix = rawName:sub(1, 3); body = rawName:sub(4)
+                            end
+                            results[#results + 1] = {
+                                raw = rawName, prefix = prefix, body = body,
+                                className = child.ClassName, isHex = isHash(body), instance = child,
+                            }
+                        end
+                    end)
+                end
+            end)
+            return results
+        end
+
+        function NetAPI:DiagReport()
+            local dump = self:DumpAll()
+            local hexCount, plainCount = 0, 0
+            for _, r in ipairs(dump) do
+                if r.isHex then hexCount = hexCount + 1 else plainCount = plainCount + 1 end
+            end
+            warn(string.format(
+                "[Net Diag] GameNet=%s | Folder=%s | Total=%d | Hex=%d | Plain=%d",
+                _GameNet and "LOADED" or "MISSING",
+                _NetFolder and "FOUND" or "MISSING",
+                #dump, hexCount, plainCount
+            ))
+            return { gameNetLoaded = _GameNet ~= nil, folderFound = _NetFolder ~= nil,
+                total = #dump, hex = hexCount, plain = plainCount, remotes = dump }
+        end
+
+        function NetAPI:Exists(remoteType, path)
+            local m = ({RE = self.RE, RF = self.RF, URE = self.URE})[remoteType:upper()]
+            return m and m(self, path) ~= nil or false
+        end
+
+        function NetAPI:Verify()
+            local pass = 0
+            for _, name in ipairs({"PlotService/Sell", "PlotService/Open", "InventoryService/Sort"}) do
+                if self:RE(name) then pass = pass + 1 end
+            end
+            return pass >= 1
+        end
+
+        _S.Net = NetAPI
+    end
+end
+
+
+-- ═══════════════════════════════════════════════════════════════
+-- SYNCWRAPPER — Direct channel access without v_u_9() detection
+
+
+-- ═══════════════════════════════════════════════════════════════
+if not _S.SyncWrapper then
+    pcall(function()
+        local Packages = RS:WaitForChild("Packages", 30)
+        if not Packages then return end
+        local SyncMod = Packages:FindFirstChild("Synchronizer")
+        if not SyncMod then return end
+        local ok, OrigSync = pcall(require, SyncMod)
+        if not ok or not OrigSync or not OrigSync.GetAllChannels then return end
+        local ok2, channels = pcall(function() return OrigSync:GetAllChannels() end)
+        if not ok2 or type(channels) ~= "table" then return end
+
+        local SW = {}
+        function SW:GetAllChannels() return channels end
+        function SW:Get(idx) return idx and channels[idx] or nil end
+        function SW:GetTableFromChannel(idx)
+            local ch = channels[idx]
+            return ch and ch.GetTable and ch:GetTable() or nil
+        end
+        function SW:Wait(idx)
+            if not idx then return nil end
+            if channels[idx] then return channels[idx] end
+            if not OrigSync.OnChannelCreated then return nil end
+            local thread = coroutine.running()
+            local conn, timedOut
+            conn = OrigSync.OnChannelCreated:Connect(function(ch)
+                if timedOut then return end
+                if ch:GetIndex() == idx then conn:Disconnect(); task.spawn(thread, ch) end
+            end)
+            task.delay(10, function()
+                if conn.Connected then timedOut = true; conn:Disconnect(); task.spawn(thread, nil) end
+            end)
+            return coroutine.yield()
+        end
+        SW.OnChannelCreated = OrigSync.OnChannelCreated
+        SW.OnChannelDestroyed = OrigSync.OnChannelDestroyed
+        _S.SyncWrapper = SW
+        _S.SYNC_READY = true
+    end)
+end
+
+
+-- ═══════════════════════════════════════════════════════════════
+-- __ASTRO_LIB — Shared null-safe helper library (loaded ONCE)
+-- All helpers assume nothing is alive. No null shall pass.
+-- Scripts use: local L = getgenv().__ASTRO_LIB
+
+
+-- ═══════════════════════════════════════════════════════════════
+if not getgenv().__ASTRO_LIB then
+    local Players = game:GetService("Players")
+    local RunService = game:GetService("RunService")
+    local LP = Players.LocalPlayer
+    local lib = {}
+
+    -- ── Instance validity ──
+    -- Returns true only if inst exists AND has a parent (not destroyed)
+    function lib.alive(inst)
+        if not inst then return false end
+        local ok, p = pcall(function() return inst.Parent end)
+        return ok and p ~= nil
+    end
+
+    -- ── Safe character getter ──
+    function lib.getChar(player)
+        player = player or LP
+        if not player then return nil end
+        local c = player.Character
+        if not c or not c.Parent then return nil end
+        return c
+    end
+
+    -- ── Safe HumanoidRootPart getter ──
+    function lib.getHRP(player)
+        local c = lib.getChar(player)
+        if not c then return nil end
+        local h = c:FindFirstChild("HumanoidRootPart")
+        return (h and h.Parent) and h or nil
+    end
+
+    -- ── Safe Humanoid getter ──
+    function lib.getHum(player)
+        local c = lib.getChar(player)
+        if not c then return nil end
+        local h = c:FindFirstChildOfClass("Humanoid")
+        return (h and h.Parent) and h or nil
+    end
+
+    -- ── Safe Position read (returns nil instead of crashing) ──
+    function lib.getPos(inst)
+        if not inst then return nil end
+        local ok, pos = pcall(function() return inst.Position end)
+        return ok and pos or nil
+    end
+
+    -- ── Safe CFrame read ──
+    function lib.getCF(inst)
+        if not inst then return nil end
+        local ok, cf = pcall(function() return inst.CFrame end)
+        return ok and cf or nil
+    end
+
+    -- ── Safe distance between two instances (returns math.huge on failure) ──
+    function lib.dist(a, b)
+        local pa, pb = lib.getPos(a), lib.getPos(b)
+        if not pa or not pb then return math.huge end
+        return (pa - pb).Magnitude
+    end
+
+    -- ── Safe FindFirstChild (nil parent = nil result) ──
+    function lib.find(parent, name)
+        if not parent then return nil end
+        local ok, child = pcall(parent.FindFirstChild, parent, name)
+        return (ok and child) and child or nil
+    end
+
+    -- ── Safe FindFirstChildOfClass ──
+    function lib.findClass(parent, className)
+        if not parent then return nil end
+        local ok, child = pcall(parent.FindFirstChildOfClass, parent, className)
+        return (ok and child) and child or nil
+    end
+
+    -- ── Safe tostring (prevents null-string crash from tostring on destroyed instances) ──
+    function lib.str(v)
+        if v == nil then return "nil" end
+        local ok, s = pcall(tostring, v)
+        return ok and s or "<invalid>"
+    end
+
+    -- ── Safe string concat for display names (crash RDX=0x0 at cmp [rdx+0x18]) ──
+    function lib.displayName(player)
+        if not player then return "Unknown" end
+        local ok, dn = pcall(function() return player.DisplayName end)
+        if not ok or not dn or dn == "" then
+            local ok2, n = pcall(function() return player.Name end)
+            return (ok2 and n and n ~= "") and n or "Unknown"
+        end
+        return dn
+    end
+
+    -- ── Iterate all players safely, skip LocalPlayer, skip nil characters ──
+    -- callback(player, character, hrp) — only called when all 3 are valid
+    function lib.forEachPlayer(callback, includeLocal)
+        for _, player in Players:GetPlayers() do
+            if not includeLocal and player == LP then continue end
+            local char = player.Character
+            if not char or not char.Parent then continue end
+            local hrp = char:FindFirstChild("HumanoidRootPart")
+            if hrp and hrp.Parent then
+                local ok, err = pcall(callback, player, char, hrp)
+            end
+        end
+    end
+
+    -- ── Find closest other player within range ──
+    function lib.closestPlayer(position, maxRange)
+        maxRange = maxRange or 100
+        local closest, bestDist = nil, maxRange
+        lib.forEachPlayer(function(player, char, hrp)
+            local d = (hrp.Position - position).Magnitude
+            if d < bestDist then
+                closest = player
+                bestDist = d
+            end
+        end)
+        return closest, bestDist
+    end
+
+    -- ── Find tool equipped by a player (safe) ──
+    function lib.getTool(player)
+        local char = lib.getChar(player)
+        if not char then return nil end
+        return char:FindFirstChildOfClass("Tool")
+    end
+
+    -- ── Protected Heartbeat wrapper (crash in callback won't kill the connection) ──
+    function lib.safeHeartbeat(fn)
+        return RunService.Heartbeat:Connect(function(dt)
+            local ok, err = pcall(fn, dt)
+        end)
+    end
+
+    -- ── Protected RenderStepped wrapper ──
+    function lib.safeRenderStep(fn)
+        return RunService.RenderStepped:Connect(function(dt)
+            local ok, err = pcall(fn, dt)
+        end)
+    end
+
+    -- ── Protected infinite loop (never dies from errors, respects interval) ──
+    function lib.safeLoop(fn, interval)
+        task.spawn(function()
+            while true do
+                local ok, err = pcall(fn)
+                task.wait(interval or 1)
+            end
+        end)
+    end
+
+    -- ── SAB Place ID set (shared reference) ──
+    lib.SAB_PLACE_IDS = {[109983668079237]=true,[85621847059032]=true,[99606176102979]=true}
+
+    -- ── Teleport safety check (stop loops when game changes) ──
+    function lib.isSABPlace()
+        return lib.SAB_PLACE_IDS[game.PlaceId] == true
+    end
+
+    getgenv().__ASTRO_LIB = lib
+end
+
+-- Mark container as fully initialized for fast-path
+_S._CONTAINER_READY = true
+end -- CONTAINER INIT GUARD
+
+
+-- ═══════════════════════════════════════════════════════════════
+-- EXPORTS — These locals are available to the rest of the script
+
+
+-- ═══════════════════════════════════════════════════════════════
+local SAB_PLACE_IDS = getgenv().__ASTRO_LIB and getgenv().__ASTRO_LIB.SAB_PLACE_IDS or {[109983668079237]=true,[85621847059032]=true,[99606176102979]=true}
+local ASTRO_STATE = _S
+local Net = _S.Net
+local Synchronizer = _S.SyncWrapper
+local SyncWrapper = Synchronizer
+local L = getgenv().__ASTRO_LIB
+
+-- Auto-run diagnostics on first load
+if not _S.DIAG_RUN and Net then
+    pcall(function()
+        task.defer(function()
+            task.wait(3)
+            Net:DiagReport()
+            _S.DIAG_RUN = true
+        end)
+    end)
+end
+
+
+-- ╚═══ END SAB ANTICHEAT CONTAINER v3 ═══╝
+
+
+
+-- ╔═══════════════════════════════════════════════════════════════════════╗
+-- ║  FasterPrompts v4 — Full UI + Correct Remotes from SAB Source Dump  ║
+-- ║  Draggable UI, collapsible to icon, all settings + prompts exposed  ║
+-- ║  Remotes verified against decompiled PlotClient / AnimalController  ║
+-- ║  / AnimalPrompt source (March 2026 build)                           ║
+
+-- ╚═══════════════════════════════════════════════════════════════════════╝
+-- Gate: Only Steal a Brainrot places
+local SAB_IDS = {[109983668079237]=true,[85621847059032]=true,[99606176102979]=true}
+if not SAB_IDS[game.PlaceId] then return end
+if not game:IsLoaded() then game.Loaded:Wait() end
+
+-- ═══════════════════════════════════════════════════════════════
+-- SERVICES
+
+-- ═══════════════════════════════════════════════════════════════
+local Players = game:GetService("Players")
+local RS = game:GetService("ReplicatedStorage")
+local PPS = game:GetService("ProximityPromptService")
+local UIS = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+local HttpService = game:GetService("HttpService")
+local LocalPlayer = Players.LocalPlayer
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+
+-- ═══════════════════════════════════════════════════════════════
+-- GETGENV STATE (shared across re-executions)
+
+-- ═══════════════════════════════════════════════════════════════
+local _S = getgenv().__ASTRO_SYNC or {}
+getgenv().__ASTRO_SYNC = _S
+
+-- ═══════════════════════════════════════════════════════════════
+-- NET MODULE PATCHER — Neuter executor-detection vectors
+
+-- ═══════════════════════════════════════════════════════════════
+if not _S._net_getfenv_patched then
+    _S._net_getfenv_patched = true
+    local Packages = RS:FindFirstChild("Packages")
+    local NetFolder = Packages and Packages:FindFirstChild("Net")
+    local NetScript = NetFolder and NetFolder:FindFirstChildWhichIsA("ModuleScript", true)
+    local renvGetfenv = getrenv().getfenv
+    local renvSetfenv = getrenv().setfenv
+    if NetScript then
+        local dummyGetfenv = newcclosure(function() return {} end)
+        local dummySetfenv = newcclosure(function() end)
+        local patched = 0
+        local function isGfe(v) return type(v) == "function" and (v == getfenv or v == renvGetfenv) end
+        local function isSfe(v) return type(v) == "function" and (v == setfenv or v == renvSetfenv) end
+        local killStrings = {getfenv=true,setfenv=true,identifyexecutor=true,isexecutorclosure=true,iscclosure=true,islclosure=true}
+        local function patchFunc(fn)
+            pcall(function()
+                for i, v in pairs(getupvalues(fn)) do
+                    if isGfe(v) then pcall(setupvalue, fn, i, dummyGetfenv); patched = patched + 1
+                    elseif isSfe(v) then pcall(setupvalue, fn, i, dummySetfenv); patched = patched + 1
+                    elseif type(v) == "table" then
+                        for tk, tv in pairs(v) do
+                            if isGfe(tv) then v[tk] = dummyGetfenv; patched = patched + 1
+                            elseif isSfe(tv) then v[tk] = dummySetfenv; patched = patched + 1 end
+                        end
+                    end
+                end
+            end)
+            pcall(function()
+                for i, c in pairs(getconstants(fn)) do
+                    if type(c) == "string" and killStrings[c] then pcall(setconstant, fn, i, "____dead"); patched = patched + 1 end
+                    if isGfe(c) then pcall(setconstant, fn, i, dummyGetfenv); patched = patched + 1
+                    elseif isSfe(c) then pcall(setconstant, fn, i, dummySetfenv); patched = patched + 1 end
+                end
+            end)
+            pcall(function()
+                for _, proto in ipairs(getprotos(fn)) do patchFunc(proto) end
+            end)
+        end
+        pcall(function()
+            local ok, mod = pcall(require, NetScript)
+            if ok and mod and type(mod) == "table" then
+                for _, fn in pairs(mod) do
+                    if type(fn) == "function" then
+                        local ie = false; pcall(function() ie = isexecutorclosure(fn) end)
+                        if not ie then patchFunc(fn) end
+                    end
+                end
+            end
+        end)
+        pcall(function()
+            for _, obj in ipairs(getgc(true)) do
+                if type(obj) == "function" then
+                    local ie = false; pcall(function() ie = isexecutorclosure(obj) end)
+                    if not ie then
+                        local src; pcall(function() src = getfenv(obj).script end)
+                        if src == NetScript then patchFunc(obj) end
+                    end
+                end
+            end
+        end)
+        warn("[FP] Net module patched — " .. patched .. " refs neutralized")
+    end
+end
+
+-- ═══════════════════════════════════════════════════════════════
+-- AC CLEANUP
+
+-- ═══════════════════════════════════════════════════════════════
+if not _S.AC_CLEANUP_DONE then
+    pcall(function()
+        for _, n in ipairs({"QuitsAntiCheatChecker", "QuitsAntiCheatLocal"}) do
+            for _, p in ipairs({LocalPlayer.PlayerScripts, game:GetService("StarterPlayer").StarterPlayerScripts}) do
+                local c = p:FindFirstChild(n)
+                if c then c:Destroy() end
+            end
+        end
+    end)
+    _S.AC_CLEANUP_DONE = true
+end
+-- Desync temp-patch killer
+if not _S.DESYNC_PATCH_KILLED then
+    pcall(function()
+        local df = RS:FindFirstChild("Desync")
+        if df then
+            for _, c in ipairs(df:GetChildren()) do
+                if c:IsA("RemoteEvent") or c:IsA("UnreliableRemoteEvent") then
+                    pcall(function()
+                        if getconnections then
+                            for _, cn in pairs(getconnections(c.OnClientEvent)) do pcall(function() cn:Disable() end) end
+                        end
+                        c:Destroy()
+                    end)
+                end
+            end
+        end
+    end)
+    pcall(function()
+        RS.DescendantAdded:Connect(function(d)
+            if d.Name == "UnreliableRemoteEvent" and d.Parent and d.Parent.Name == "Desync" then
+                task.defer(function()
+                    pcall(function()
+                        if getconnections then
+                            for _, cn in pairs(getconnections(d.OnClientEvent)) do cn:Disable() end
+                        end
+                        d:Destroy()
+                    end)
+                end)
+            end
+        end)
+    end)
+    _S.DESYNC_PATCH_KILLED = true
+end
+
+-- ═══════════════════════════════════════════════════════════════
+-- REMOTES — Verified from SAB client source dump (March 2026)
+
+-- ═══════════════════════════════════════════════════════════════
+--
+-- DualFire pattern (from AnimalController.lua, PlotClient.lua, AnimalPrompt.lua):
+--   local FireServer = Instance.new("RemoteEvent").FireServer
+--   FireServer(remote, GetServerTimeNow() + offset, shadowUUID, ...args)   -- shadow
+--   remote:FireServer(GetServerTimeNow() + offset, primaryUUID, ...args)   -- primary
+--
+local REMOTES = {
+    -- AnimalPrompt: Fired on PromptButtonHoldBegan when State=="Steal"
+    -- Source: PlotClient/AnimalPrompt.lua line ~94-95
+    AnimalPrompt = {
+        uuid     = "f40f7d9e-2f0d-4167-b250-899273f46874",
+        offset   = 124,
+        shadow   = "68c86eb7-eb7e-4b4d-96ae-cf7cd847c5b0",
+        primary  = "07b9cc25-2a1f-4a26-a0ec-f2fab578d8bd",
+    },
+    -- PlotClient Steal: Fired on Triggered when State=="Steal" (after 1.5s hold)
+    -- Source: PlotClient.lua line ~553-554
+    -- Args: plotModelName, slotKey
+    PlotClient = {
+        uuid     = "3ba148c9-7ed6-4675-93f8-9f7c356a2c54",
+        offset   = 31,
+        shadow   = "cda5c764-d4e3-45c4-94e4-53a538347590",
+        primary  = "8c852fbf-d542-4ef4-aa28-612e24db8d4a",
+    },
+    -- AnimalController: Animal purchase prompt triggered
+    -- Source: AnimalController.lua line ~100-101
+    -- Args: animalUID
+    AnimalController = {
+        uuid     = "9ceddac0-775c-4449-ae9e-6fff3792c8a1",
+        offset   = 43,
+        shadow   = "3d3ab689-343b-4632-8337-3ee5eb6e505e",
+        primary  = "3ce04c41-b21f-4b2a-b93a-037427eac16d",
+    },
+    -- PlotCoinCollect / Delivery hitbox: Drop stolen animal at base
+    -- Source: PlotClient.lua line ~780-781
+    -- Args: just the UUID string (no timestamp!)
+    PlotCoinCollect = {
+        uuid     = "07205405-20ce-4948-b0dd-36b680f698e9",
+        offset   = 0,
+        shadow   = "0fca7b2e-7e6b-40c5-bb10-4469a82a9ab3",
+        primary  = "0fca7b2e-7e6b-40c5-bb10-4469a82a9ab3",
+    },
+    -- Named remotes (standard :FireServer, no DualFire)
+    Named = {
+        Sell           = "PlotService/Sell",                 -- args: slotKey
+        Open           = "PlotService/Open",                 -- args: slotKey
+        ClaimCoins     = "PlotService/ClaimCoins",           -- args: slotIndex
+        Grab           = "StealService/Grab",                -- args: "Grab"|"Place", slotKey
+        ToggleFriends  = "PlotService/ToggleFriends",        -- no args
+        Leave          = "PlotService/Leave",                -- no args
+        GrabDropped    = "StealService/GrabDroppedBrainrot", -- args: brainrotKey
+    },
+}
+
+-- ═══════════════════════════════════════════════════════════════
+-- NET PROXY — Resolve remotes through game's own Net module
+
+-- ═══════════════════════════════════════════════════════════════
+local _NetFolder, _GameNet
+pcall(function()
+    local Packages = RS:FindFirstChild("Packages")
+    if not Packages then return end
+    _NetFolder = Packages:FindFirstChild("Net")
+    if not _NetFolder then return end
+    local modScript = _NetFolder:FindFirstChildWhichIsA("ModuleScript", true)
+    if modScript then
+        local ok, mod = pcall(require, modScript)
+        if ok and mod then _GameNet = mod end
+    end
+end)
+local _remoteCache = {}
+local function resolveRemote(prefix, path)
+    local ck = prefix .. path
+    if _remoteCache[ck] then
+        local ok, p = pcall(function() return _remoteCache[ck].Parent end)
+        if ok and p then return _remoteCache[ck] end
+        _remoteCache[ck] = nil
+    end
+    local inst
+    -- Strategy 1: Game's own resolver (handles HMAC internally)
+    if _GameNet then
+        local resolverName = ({["RE/"]="RemoteEvent",["RF/"]="RemoteFunction",["URE/"]="UnreliableRemoteEvent"})[prefix]
+        if resolverName and _GameNet[resolverName] then
+            pcall(function() inst = _GameNet[resolverName](_GameNet, path) end)
+        end
+    end
+    -- Strategy 2: Direct folder child lookup
+    if not inst and _NetFolder then
+        pcall(function() inst = _NetFolder:FindFirstChild(ck) end)
+        if not inst then pcall(function() inst = _NetFolder:FindFirstChild(path) end) end
+    end
+    if inst then _remoteCache[ck] = inst end
+    return inst
+end
+local function getRemoteByUUID(uuid)
+    local ck = "UUID:" .. uuid
+    if _remoteCache[ck] then
+        local ok, p = pcall(function() return _remoteCache[ck].Parent end)
+        if ok and p then return _remoteCache[ck] end
+        _remoteCache[ck] = nil
+    end
+    if _NetFolder then
+        for _, pfx in ipairs({"RE/", "RF/", "URE/", ""}) do
+            local inst; pcall(function() inst = _NetFolder:FindFirstChild(pfx .. uuid) end)
+            if inst then _remoteCache[ck] = inst; return inst end
+        end
+    end
+    return nil
+end
+local function getNamedRemote(name)
+    return resolveRemote("RE/", name)
+end
+-- Raw FireServer reference (bypasses hooks — matches game's exact DualFire pattern)
+local rawFireServer = Instance.new("RemoteEvent").FireServer
+local function dualFire(systemKey, ...)
+    local info = REMOTES[systemKey]
+    if not info or not info.uuid then return false end
+    local remote = getRemoteByUUID(info.uuid)
+    if not remote then return false end
+    local now = workspace:GetServerTimeNow()
+    local args = {...}
+    if info.offset > 0 then
+        -- With timestamp offset (AnimalPrompt, PlotClient, AnimalController)
+        pcall(rawFireServer, remote, now + info.offset, info.shadow, unpack(args))
+        pcall(remote.FireServer, remote, now + info.offset, info.primary, unpack(args))
+    else
+        -- No timestamp (PlotCoinCollect) — just UUID arg
+        pcall(rawFireServer, remote, info.shadow, unpack(args))
+        pcall(remote.FireServer, remote, info.primary, unpack(args))
+    end
+    return true
+end
+local function fireNamed(name, ...)
+    local path = REMOTES.Named[name]
+    if not path then return false end
+    local r = getNamedRemote(path)
+    if not r then return false end
+    local ok = pcall(r.FireServer, r, ...)
+    return ok
+end
+
+-- ═══════════════════════════════════════════════════════════════
+-- SETTINGS — Persisted to astroconfig/faster_prompts.json
+
+-- ═══════════════════════════════════════════════════════════════
+local CONFIG_PATH = "astroconfig/faster_prompts.json"
+-- Defaults (used when no config file exists or key is missing)
+local DEFAULTS = {
+    Enabled         = true,
+    AutoSteal       = true,    -- Prefire HoldBegan + auto-execute steal
+    InstantSell     = true,    -- Reduce sell hold time
+    InstantOpen     = true,    -- HoldDuration = 0 for Open
+    InstantGrab     = true,    -- HoldDuration = 0 for Grab/Place
+    InstantReturn   = true,    -- HoldDuration = 0 for Return
+    InstantPurchase = true,    -- HoldDuration = 0 for Buy/Purchase prompts
+    BlockHoldReset  = true,    -- Hook __newindex to block game resetting HoldDuration
+    Verbose         = false,   -- Print debug logs
+    SellHoldTime    = 0.15,    -- Minimum sell hold (seconds)
+    StealServerWait = 1.5,     -- Server-validated gap (don't go below 1.5!)
+    PrefireRefresh  = 0.5,     -- How often to refresh prefire while near target
+}
+local function ensureConfigFolder()
+    pcall(function()
+        if isfolder and not isfolder("astroconfig") then
+            makefolder("astroconfig")
+        end
+    end)
+end
+local function loadSettings()
+    local settings = {}
+    -- Start from defaults
+    for k, v in pairs(DEFAULTS) do
+        settings[k] = v
+    end
+    -- Overlay saved values
+    pcall(function()
+        if isfile and isfile(CONFIG_PATH) then
+            local data = HttpService:JSONDecode(readfile(CONFIG_PATH))
+            if data and type(data) == "table" then
+                for k, v in pairs(data) do
+                    if DEFAULTS[k] ~= nil then -- only load known keys
+                        settings[k] = v
+                    end
+                end
+            end
+        end
+    end)
+    return settings
+end
+local function saveSettings(settings)
+    pcall(function()
+        ensureConfigFolder()
+        writefile(CONFIG_PATH, HttpService:JSONEncode(settings))
+    end)
+end
+local Settings = loadSettings()
+saveSettings(Settings) -- persist on first load (creates file if missing, adds new keys)
+-- Log loaded values so user can verify config is working
+do
+    local changed = {}
+    for k, def in pairs(DEFAULTS) do
+        if Settings[k] ~= def then
+            table.insert(changed, k .. "=" .. tostring(Settings[k]))
+        end
+    end
+    if #changed > 0 then
+        warn("[FP] Config loaded — custom: " .. table.concat(changed, ", "))
+    else
+        warn("[FP] Config loaded — all defaults (" .. CONFIG_PATH .. ")")
+    end
+end
+local _settingCallbacks = {}
+local function onSettingChanged(key, cb)
+    _settingCallbacks[key] = _settingCallbacks[key] or {}
+    table.insert(_settingCallbacks[key], cb)
+end
+local function setSetting(key, val)
+    Settings[key] = val
+    saveSettings(Settings) -- persist every change to disk
+    for _, cb in ipairs(_settingCallbacks[key] or {}) do
+        pcall(cb, val)
+    end
+end
+
+-- ═══════════════════════════════════════════════════════════════
+-- LOGGING
+
+-- ═══════════════════════════════════════════════════════════════
+local function log(...)
+    if not Settings.Verbose then return end
+    print("[FP]", ...)
+end
+
+-- ═══════════════════════════════════════════════════════════════
+-- UI CREATION
+
+-- ═══════════════════════════════════════════════════════════════
+-- Destroy previous UI on re-execute
+if getgenv().__FP_UI then
+    pcall(function() getgenv().__FP_UI:Destroy() end)
+end
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "FasterPromptsUI"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+ScreenGui.DisplayOrder = 999
+getgenv().__FP_UI = ScreenGui
+-- Theme colors
+local C = {
+    bg         = Color3.fromRGB(18, 18, 26),
+    bgLight    = Color3.fromRGB(28, 28, 40),
+    accent     = Color3.fromRGB(88, 116, 255),
+    accentDim  = Color3.fromRGB(55, 75, 170),
+    text       = Color3.fromRGB(218, 218, 228),
+    textDim    = Color3.fromRGB(130, 130, 155),
+    green      = Color3.fromRGB(75, 195, 115),
+    red        = Color3.fromRGB(215, 75, 75),
+    orange     = Color3.fromRGB(235, 155, 55),
+    border     = Color3.fromRGB(45, 45, 65),
+    toggleOn   = Color3.fromRGB(75, 195, 115),
+    toggleOff  = Color3.fromRGB(70, 70, 90),
+}
+local FONT = Font.new("rbxassetid://12187365364", Enum.FontWeight.Medium)
+local FONT_BOLD = Font.new("rbxassetid://12187365364", Enum.FontWeight.Bold)
+
+-- ─── Icon Button (collapsed state) ───
+local IconButton = Instance.new("TextButton")
+IconButton.Name = "FP_Icon"
+IconButton.Size = UDim2.fromOffset(40, 40)
+IconButton.Position = UDim2.new(1, -56, 0, 10)
+IconButton.AnchorPoint = Vector2.new(0, 0)
+IconButton.BackgroundColor3 = C.accent
+IconButton.Text = "⚡"
+IconButton.TextSize = 20
+IconButton.TextColor3 = Color3.new(1, 1, 1)
+IconButton.BorderSizePixel = 0
+IconButton.AutoButtonColor = false
+IconButton.Parent = ScreenGui
+Instance.new("UICorner", IconButton).CornerRadius = UDim.new(0, 10)
+local iconStroke = Instance.new("UIStroke", IconButton)
+iconStroke.Color = C.border; iconStroke.Thickness = 1.5
+-- Icon dragging
+do
+    local dragging, dragStart, startPos
+    IconButton.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true; dragStart = input.Position; startPos = IconButton.Position
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then dragging = false end
+            end)
+        end
+    end)
+    UIS.InputChanged:Connect(function(input)
+        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+            local d = input.Position - dragStart
+            IconButton.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
+        end
+    end)
+end
+
+-- ─── Main Frame ───
+local MainFrame = Instance.new("Frame")
+MainFrame.Name = "FP_Main"
+MainFrame.Size = UDim2.fromOffset(290, 440)
+MainFrame.Position = UDim2.new(1, -310, 0, 10)
+MainFrame.BackgroundColor3 = C.bg
+MainFrame.BorderSizePixel = 0
+MainFrame.Visible = false
+MainFrame.Parent = ScreenGui
+Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 10)
+local mainStroke = Instance.new("UIStroke", MainFrame)
+mainStroke.Color = C.border; mainStroke.Thickness = 1.5
+-- Shadow
+local shadow = Instance.new("ImageLabel")
+shadow.Name = "Shadow"
+shadow.Size = UDim2.new(1, 24, 1, 24)
+shadow.Position = UDim2.fromOffset(-12, -12)
+shadow.BackgroundTransparency = 1
+shadow.Image = "rbxassetid://6014261993"
+shadow.ImageColor3 = Color3.new(0, 0, 0)
+shadow.ImageTransparency = 0.5
+shadow.ScaleType = Enum.ScaleType.Slice
+shadow.SliceCenter = Rect.new(49, 49, 450, 450)
+shadow.ZIndex = -1
+shadow.Parent = MainFrame
+-- Title bar
+local TitleBar = Instance.new("Frame")
+TitleBar.Name = "TitleBar"
+TitleBar.Size = UDim2.new(1, 0, 0, 34)
+TitleBar.BackgroundColor3 = C.bgLight
+TitleBar.BorderSizePixel = 0
+TitleBar.Parent = MainFrame
+Instance.new("UICorner", TitleBar).CornerRadius = UDim.new(0, 10)
+-- Fix bottom corners
+local tbFix = Instance.new("Frame")
+tbFix.Size = UDim2.new(1, 0, 0, 12); tbFix.Position = UDim2.new(0, 0, 1, -12)
+tbFix.BackgroundColor3 = C.bgLight; tbFix.BorderSizePixel = 0; tbFix.Parent = TitleBar
+local TitleLabel = Instance.new("TextLabel")
+TitleLabel.Size = UDim2.new(1, -80, 1, 0)
+TitleLabel.Position = UDim2.fromOffset(10, 0)
+TitleLabel.BackgroundTransparency = 1
+TitleLabel.Text = "⚡ FasterPrompts"
+TitleLabel.TextColor3 = C.text
+TitleLabel.TextSize = 13
+TitleLabel.FontFace = FONT_BOLD
+TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
+TitleLabel.Parent = TitleBar
+-- Status
+local StatusDot = Instance.new("Frame")
+StatusDot.Size = UDim2.fromOffset(7, 7)
+StatusDot.Position = UDim2.new(1, -66, 0.5, -3)
+StatusDot.BackgroundColor3 = C.green; StatusDot.BorderSizePixel = 0
+StatusDot.Parent = TitleBar
+Instance.new("UICorner", StatusDot).CornerRadius = UDim.new(1, 0)
+local StatusLabel = Instance.new("TextLabel")
+StatusLabel.Size = UDim2.fromOffset(36, 34)
+StatusLabel.Position = UDim2.new(1, -56, 0, 0)
+StatusLabel.BackgroundTransparency = 1
+StatusLabel.Text = "ON"; StatusLabel.TextColor3 = C.green
+StatusLabel.TextSize = 10; StatusLabel.FontFace = FONT_BOLD
+StatusLabel.Parent = TitleBar
+-- Collapse button
+local CollapseBtn = Instance.new("TextButton")
+CollapseBtn.Size = UDim2.fromOffset(26, 26)
+CollapseBtn.Position = UDim2.new(1, -30, 0, 4)
+CollapseBtn.BackgroundColor3 = C.bg
+CollapseBtn.Text = "—"; CollapseBtn.TextColor3 = C.textDim
+CollapseBtn.TextSize = 14; CollapseBtn.FontFace = FONT_BOLD
+CollapseBtn.BorderSizePixel = 0; CollapseBtn.AutoButtonColor = false
+CollapseBtn.Parent = TitleBar
+Instance.new("UICorner", CollapseBtn).CornerRadius = UDim.new(0, 6)
+-- Title bar dragging
+do
+    local dragging, dragStart, startPos
+    TitleBar.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true; dragStart = input.Position; startPos = MainFrame.Position
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then dragging = false end
+            end)
+        end
+    end)
+    UIS.InputChanged:Connect(function(input)
+        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+            local d = input.Position - dragStart
+            MainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
+        end
+    end)
+end
+
+-- ─── Content scroll ───
+local ContentFrame = Instance.new("ScrollingFrame")
+ContentFrame.Name = "Content"
+ContentFrame.Size = UDim2.new(1, -6, 1, -40)
+ContentFrame.Position = UDim2.fromOffset(3, 36)
+ContentFrame.BackgroundTransparency = 1
+ContentFrame.BorderSizePixel = 0
+ContentFrame.ScrollBarThickness = 3
+ContentFrame.ScrollBarImageColor3 = C.accent
+ContentFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
+ContentFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
+ContentFrame.Parent = MainFrame
+local contentLayout = Instance.new("UIListLayout", ContentFrame)
+contentLayout.Padding = UDim.new(0, 3)
+contentLayout.SortOrder = Enum.SortOrder.LayoutOrder
+local contentPad = Instance.new("UIPadding", ContentFrame)
+contentPad.PaddingLeft = UDim.new(0, 5)
+contentPad.PaddingRight = UDim.new(0, 5)
+contentPad.PaddingTop = UDim.new(0, 3)
+contentPad.PaddingBottom = UDim.new(0, 3)
+
+-- ─── UI Helpers ───
+local layoutOrder = 0
+local function nextOrder() layoutOrder = layoutOrder + 1; return layoutOrder end
+local function createSection(title)
+    local f = Instance.new("Frame")
+    f.Size = UDim2.new(1, 0, 0, 20); f.BackgroundTransparency = 1
+    f.LayoutOrder = nextOrder(); f.Parent = ContentFrame
+    local l = Instance.new("TextLabel", f)
+    l.Size = UDim2.new(1, 0, 1, 0); l.BackgroundTransparency = 1
+    l.Text = "  " .. title; l.TextColor3 = C.accent
+    l.TextSize = 10; l.FontFace = FONT_BOLD; l.TextXAlignment = Enum.TextXAlignment.Left
+    local line = Instance.new("Frame", f)
+    line.Size = UDim2.new(1, 0, 0, 1); line.Position = UDim2.new(0, 0, 1, -1)
+    line.BackgroundColor3 = C.border; line.BorderSizePixel = 0
+end
+local function createToggle(label, settingKey)
+    local f = Instance.new("Frame")
+    f.Size = UDim2.new(1, 0, 0, 28); f.BackgroundColor3 = C.bgLight
+    f.BorderSizePixel = 0; f.LayoutOrder = nextOrder(); f.Parent = ContentFrame
+    Instance.new("UICorner", f).CornerRadius = UDim.new(0, 6)
+    local tl = Instance.new("TextLabel", f)
+    tl.Size = UDim2.new(1, -56, 1, 0); tl.Position = UDim2.fromOffset(8, 0)
+    tl.BackgroundTransparency = 1; tl.Text = label; tl.TextColor3 = C.text
+    tl.TextSize = 11; tl.FontFace = FONT; tl.TextXAlignment = Enum.TextXAlignment.Left
+    local track = Instance.new("Frame", f)
+    track.Size = UDim2.fromOffset(36, 16)
+    track.Position = UDim2.new(1, -44, 0.5, -8)
+    track.BackgroundColor3 = Settings[settingKey] and C.toggleOn or C.toggleOff
+    track.BorderSizePixel = 0
+    Instance.new("UICorner", track).CornerRadius = UDim.new(1, 0)
+    local knob = Instance.new("Frame", track)
+    knob.Size = UDim2.fromOffset(12, 12)
+    knob.Position = Settings[settingKey] and UDim2.fromOffset(22, 2) or UDim2.fromOffset(2, 2)
+    knob.BackgroundColor3 = Color3.new(1, 1, 1); knob.BorderSizePixel = 0
+    Instance.new("UICorner", knob).CornerRadius = UDim.new(1, 0)
+    local function updateVis(val)
+        TweenService:Create(knob, TweenInfo.new(0.12), {Position = val and UDim2.fromOffset(22, 2) or UDim2.fromOffset(2, 2)}):Play()
+        TweenService:Create(track, TweenInfo.new(0.12), {BackgroundColor3 = val and C.toggleOn or C.toggleOff}):Play()
+    end
+    local btn = Instance.new("TextButton", f)
+    btn.Size = UDim2.new(1, 0, 1, 0); btn.BackgroundTransparency = 1; btn.Text = ""
+    btn.MouseButton1Click:Connect(function()
+        setSetting(settingKey, not Settings[settingKey])
+        updateVis(Settings[settingKey])
+    end)
+    onSettingChanged(settingKey, updateVis)
+    return f
+end
+local function createSlider(label, settingKey, min, max, step, unit)
+    local f = Instance.new("Frame")
+    f.Size = UDim2.new(1, 0, 0, 40); f.BackgroundColor3 = C.bgLight
+    f.BorderSizePixel = 0; f.LayoutOrder = nextOrder(); f.Parent = ContentFrame
+    Instance.new("UICorner", f).CornerRadius = UDim.new(0, 6)
+    local tl = Instance.new("TextLabel", f)
+    tl.Size = UDim2.new(0.55, 0, 0, 18); tl.Position = UDim2.fromOffset(8, 1)
+    tl.BackgroundTransparency = 1; tl.Text = label; tl.TextColor3 = C.text
+    tl.TextSize = 11; tl.FontFace = FONT; tl.TextXAlignment = Enum.TextXAlignment.Left
+    local vl = Instance.new("TextLabel", f)
+    vl.Size = UDim2.new(0.4, 0, 0, 18); vl.Position = UDim2.new(0.55, 0, 0, 1)
+    vl.BackgroundTransparency = 1; vl.TextColor3 = C.accent
+    vl.TextSize = 11; vl.FontFace = FONT_BOLD; vl.TextXAlignment = Enum.TextXAlignment.Right
+    vl.Text = string.format("%.2f%s", Settings[settingKey], unit or "s")
+    local sTrack = Instance.new("Frame", f)
+    sTrack.Size = UDim2.new(1, -20, 0, 5)
+    sTrack.Position = UDim2.new(0, 10, 0, 26)
+    sTrack.BackgroundColor3 = C.border; sTrack.BorderSizePixel = 0
+    Instance.new("UICorner", sTrack).CornerRadius = UDim.new(1, 0)
+    local pct = math.clamp((Settings[settingKey] - min) / (max - min), 0, 1)
+    local fill = Instance.new("Frame", sTrack)
+    fill.Size = UDim2.new(pct, 0, 1, 0)
+    fill.BackgroundColor3 = C.accent; fill.BorderSizePixel = 0
+    Instance.new("UICorner", fill).CornerRadius = UDim.new(1, 0)
+    local sKnob = Instance.new("Frame", sTrack)
+    sKnob.Size = UDim2.fromOffset(10, 10)
+    sKnob.Position = UDim2.new(pct, -5, 0.5, -5)
+    sKnob.BackgroundColor3 = Color3.new(1, 1, 1); sKnob.BorderSizePixel = 0
+    Instance.new("UICorner", sKnob).CornerRadius = UDim.new(1, 0)
+    local isDragging = false
+    local sBtn = Instance.new("TextButton", f)
+    sBtn.Size = UDim2.new(1, 0, 0, 18); sBtn.Position = UDim2.new(0, 0, 0, 18)
+    sBtn.BackgroundTransparency = 1; sBtn.Text = ""
+    sBtn.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            isDragging = true
+        end
+    end)
+    UIS.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            isDragging = false
+        end
+    end)
+    UIS.InputChanged:Connect(function(input)
+        if isDragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+            local aPos = sTrack.AbsolutePosition.X
+            local aSize = sTrack.AbsoluteSize.X
+            local relX = math.clamp((input.Position.X - aPos) / aSize, 0, 1)
+            local raw = min + relX * (max - min)
+            local snapped = math.floor(raw / step + 0.5) * step
+            snapped = math.clamp(snapped, min, max)
+            setSetting(settingKey, snapped)
+        end
+    end)
+    onSettingChanged(settingKey, function(val)
+        local p = math.clamp((val - min) / (max - min), 0, 1)
+        fill.Size = UDim2.new(p, 0, 1, 0)
+        sKnob.Position = UDim2.new(p, -5, 0.5, -5)
+        vl.Text = string.format("%.2f%s", val, unit or "s")
+    end)
+    return f
+end
+local function createInfoRow(label, default)
+    local f = Instance.new("Frame")
+    f.Size = UDim2.new(1, 0, 0, 18); f.BackgroundTransparency = 1
+    f.LayoutOrder = nextOrder(); f.Parent = ContentFrame
+    local lbl = Instance.new("TextLabel", f)
+    lbl.Size = UDim2.new(0.42, 0, 1, 0); lbl.Position = UDim2.fromOffset(8, 0)
+    lbl.BackgroundTransparency = 1; lbl.Text = label; lbl.TextColor3 = C.textDim
+    lbl.TextSize = 9; lbl.FontFace = FONT; lbl.TextXAlignment = Enum.TextXAlignment.Left
+    local val = Instance.new("TextLabel", f)
+    val.Name = "Value"
+    val.Size = UDim2.new(0.55, 0, 1, 0); val.Position = UDim2.new(0.42, 0, 0, 0)
+    val.BackgroundTransparency = 1; val.Text = default or "—"; val.TextColor3 = C.text
+    val.TextSize = 9; val.FontFace = FONT; val.TextXAlignment = Enum.TextXAlignment.Right
+    return val
+end
+
+-- ═══════════════════════════════════════════════════════════════
+-- BUILD UI
+
+-- ═══════════════════════════════════════════════════════════════
+createSection("MAIN")
+createToggle("Enabled", "Enabled")
+createToggle("Verbose Logging", "Verbose")
+createSection("STEAL")
+createToggle("Auto-Steal (Prefire + Instant)", "AutoSteal")
+createSlider("Server Wait", "StealServerWait", 1.0, 3.0, 0.1, "s")
+createSlider("Prefire Refresh", "PrefireRefresh", 0.2, 2.0, 0.1, "s")
+createSection("PROMPTS")
+createToggle("Instant Sell", "InstantSell")
+createToggle("Instant Open", "InstantOpen")
+createToggle("Instant Grab / Place", "InstantGrab")
+createToggle("Instant Return", "InstantReturn")
+createToggle("Instant Purchase / Buy", "InstantPurchase")
+createSlider("Sell Hold Time", "SellHoldTime", 0.0, 1.0, 0.05, "s")
+createSection("PROTECTION")
+createToggle("Block HoldDuration Reset", "BlockHoldReset")
+createSection("STATUS")
+local infoNet = createInfoRow("Net Module:", "...")
+local infoFolder = createInfoRow("Net Folder:", "...")
+local infoRemotes = createInfoRow("Remotes:", "...")
+local infoStealState = createInfoRow("Steal Prefire:", "Idle")
+local infoPromptCount = createInfoRow("Active Prompts:", "0")
+local infoLastAction = createInfoRow("Last Action:", "—")
+-- Populate status after short delay
+task.defer(function()
+    task.wait(2)
+    infoNet.Text = _GameNet and "✓ Loaded" or "✗ Missing"
+    infoNet.TextColor3 = _GameNet and C.green or C.red
+    infoFolder.Text = _NetFolder and "✓ Found" or "✗ Missing"
+    infoFolder.TextColor3 = _NetFolder and C.green or C.red
+    local count = 0
+    if _NetFolder then
+        pcall(function()
+            for _, c in ipairs(_NetFolder:GetChildren()) do
+                if c:IsA("RemoteEvent") or c:IsA("RemoteFunction") or c:IsA("UnreliableRemoteEvent") then count = count + 1 end
+            end
+        end)
+    end
+    local critical = {"AnimalPrompt", "PlotClient", "AnimalController", "PlotCoinCollect"}
+    local found = 0
+    for _, k in ipairs(critical) do
+        if REMOTES[k] and getRemoteByUUID(REMOTES[k].uuid) then found = found + 1 end
+    end
+    infoRemotes.Text = count .. " total, " .. found .. "/" .. #critical .. " DualFire"
+    infoRemotes.TextColor3 = found == #critical and C.green or C.orange
+end)
+-- Expand / Collapse
+local expanded = false
+local function setExpanded(val)
+    expanded = val
+    MainFrame.Visible = expanded
+    IconButton.Visible = not expanded
+end
+IconButton.MouseButton1Click:Connect(function() setExpanded(true) end)
+CollapseBtn.MouseButton1Click:Connect(function() setExpanded(false) end)
+onSettingChanged("Enabled", function(val)
+    StatusDot.BackgroundColor3 = val and C.green or C.red
+    StatusLabel.Text = val and "ON" or "OFF"
+    StatusLabel.TextColor3 = val and C.green or C.red
+    IconButton.BackgroundColor3 = val and C.accent or C.red
+end)
+ScreenGui.Parent = PlayerGui
+setExpanded(false) -- Start collapsed as ⚡ icon
+-- NOTE: Setting change → reprocess hooks are registered AFTER reprocessAllPrompts is defined (see below)
+
+-- ═══════════════════════════════════════════════════════════════
+-- PROMPT LOGIC
+
+-- ═══════════════════════════════════════════════════════════════
+-- Track original HoldDuration so we can RESTORE when user toggles off
+local _originalHold = {}     -- [prompt] = original HoldDuration value
+local _allWatched = {}       -- [prompt] = true (every prompt we've seen)
+local function storeOriginal(prompt)
+    if _originalHold[prompt] then return end
+    pcall(function() _originalHold[prompt] = prompt.HoldDuration end)
+end
+local function restoreOriginal(prompt)
+    local orig = _originalHold[prompt]
+    if orig then pcall(function() prompt.HoldDuration = orig end) end
+end
+-- Steal info extraction
+-- Hierarchy: PlotModel / AnimalPodiums / [SlotKey] / Base / Spawn / PromptAttachment / ProximityPrompt
+local function getStealInfo(prompt)
+    local ok, slotKey, plotName = pcall(function()
+        local p1 = prompt and prompt.Parent
+        local p2 = p1 and p1.Parent
+        local p3 = p2 and p2.Parent
+        local podium = p3 and p3.Parent          -- [SlotKey]
+        if not podium then return nil, nil end
+        local p5 = podium.Parent
+        local plotModel = p5 and p5.Parent        -- PlotModel
+        if not plotModel then return nil, nil end
+        return tonumber(podium.Name), plotModel.Name
+    end)
+    if ok and slotKey and plotName then return slotKey, plotName end
+    return nil, nil
+end
+-- Connection management
+local disabledMap = {}
+local function disableNativeConnections(prompt)
+    if disabledMap[prompt] then return end
+    if not getconnections then return end
+    if not prompt.Parent then return end
+    local disabled = {}
+    for _, evName in ipairs({"PromptButtonHoldBegan", "Triggered", "PromptButtonHoldEnded"}) do
+        pcall(function()
+            for _, conn in ipairs(getconnections(prompt[evName])) do
+                pcall(function() conn:Disable() end)
+                table.insert(disabled, conn)
+            end
+        end)
+    end
+    pcall(function()
+        for _, conn in ipairs(getconnections(prompt.Changed)) do
+            pcall(function() conn:Disable() end)
+            table.insert(disabled, conn)
+        end
+    end)
+    disabledMap[prompt] = disabled
+    log("Disabled", #disabled, "native connections on prompt")
+end
+local function enableNativeConnections(prompt)
+    local list = disabledMap[prompt]
+    if not list then return end
+    for _, conn in ipairs(list) do pcall(function() conn:Enable() end) end
+    disabledMap[prompt] = nil
+end
+-- Anti-tamper ONLY — disables .Changed + .PromptButtonHoldBegan connections
+-- Keeps .Triggered alive so the game still processes sell/open/grab/return actions
+local antiTamperMap = {}
+local function disableAntiTamper(prompt)
+    if antiTamperMap[prompt] then return end
+    if not getconnections then return end
+    if not prompt.Parent then return end
+    local disabled = {}
+    -- .Changed connections: the game resets HoldDuration/RequiresLineOfSight/MaxActivationDistance
+    pcall(function()
+        for _, conn in ipairs(getconnections(prompt.Changed)) do
+            pcall(function() conn:Disable() end)
+            table.insert(disabled, conn)
+        end
+    end)
+    -- .PromptButtonHoldBegan connections: also reset all three properties on hold start
+    pcall(function()
+        for _, conn in ipairs(getconnections(prompt.PromptButtonHoldBegan)) do
+            pcall(function() conn:Disable() end)
+            table.insert(disabled, conn)
+        end
+    end)
+    antiTamperMap[prompt] = disabled
+    log("Anti-tamper: disabled", #disabled, "connections (Changed+HoldBegan)")
+end
+local function enableAntiTamper(prompt)
+    local list = antiTamperMap[prompt]
+    if not list then return end
+    for _, conn in ipairs(list) do pcall(function() conn:Enable() end) end
+    antiTamperMap[prompt] = nil
+end
+-- Steal state tracking
+local stealState = {}       -- [prompt] = {prefireTime, slotKey, plotName}
+local takenOver = {}
+local stealPrompts = {}
+local currentVisible = nil
+local function updatePromptCount()
+    local c = 0
+    for _ in pairs(stealPrompts) do c = c + 1 end
+    infoPromptCount.Text = tostring(c)
+end
+local function prefireSteal(prompt)
+    if not Settings.Enabled or not Settings.AutoSteal then return false end
+    local slotKey, plotName = getStealInfo(prompt)
+    if not slotKey or not plotName then
+        log("Cannot extract steal info from prompt")
+        return false
+    end
+    local fired = dualFire("AnimalPrompt")
+    if fired then
+        stealState[prompt] = {prefireTime = tick(), slotKey = slotKey, plotName = plotName}
+        infoStealState.Text = "Pre-fired → " .. plotName .. " #" .. slotKey
+        infoStealState.TextColor3 = C.orange
+        log("PRE-FIRED HoldBegan →", plotName, "slot", slotKey)
+        return true
+    end
+    log("DualFire AnimalPrompt failed")
+    return false
+end
+local function executeSteal(prompt)
+    if not Settings.Enabled then return end
+    local state = stealState[prompt]
+    if not state then
+        -- No prefire — full sequence
+        log("No prefire, full HoldBegan → wait → Steal")
+        local slotKey, plotName = getStealInfo(prompt)
+        if not slotKey or not plotName then return end
+        dualFire("AnimalPrompt")
+        task.wait(Settings.StealServerWait)
+        dualFire("PlotClient", plotName, slotKey)
+        infoLastAction.Text = "Steal (full) → " .. plotName .. " #" .. slotKey
+        log("STEAL (full) →", plotName, "slot", slotKey)
+        return
+    end
+    local elapsed = tick() - state.prefireTime
+    if elapsed < Settings.StealServerWait then
+        local remaining = Settings.StealServerWait - elapsed
+        log("Waiting", string.format("%.2fs", remaining), "...")
+        infoStealState.Text = string.format("Wait %.1fs...", remaining)
+        task.wait(remaining)
+    else
+        log("Prefire matured! INSTANT steal!")
+    end
+    local fired = dualFire("PlotClient", state.plotName, state.slotKey)
+    if fired then
+        infoLastAction.Text = "Steal → " .. state.plotName .. " #" .. state.slotKey
+        infoStealState.Text = "Idle"
+        infoStealState.TextColor3 = C.textDim
+        log("STEAL →", state.plotName, "slot", state.slotKey)
+    else
+        log("DualFire PlotClient FAILED")
+    end
+    stealState[prompt] = nil
+end
+-- Release a steal prompt back to native game behavior
+local function releaseStealPrompt(prompt)
+    if not takenOver[prompt] then return end
+    enableNativeConnections(prompt)
+    takenOver[prompt] = nil
+    stealState[prompt] = nil
+    stealPrompts[prompt] = nil
+    updatePromptCount()
+    restoreOriginal(prompt)
+    log("Released steal prompt back to native")
+end
+local function takeOverStealPrompt(prompt)
+    if takenOver[prompt] then return end
+    takenOver[prompt] = true
+    stealPrompts[prompt] = true
+    updatePromptCount()
+    storeOriginal(prompt)
+    disableNativeConnections(prompt)
+    prompt.HoldDuration = 0
+    prompt.RequiresLineOfSight = false
+    prompt.Triggered:Connect(function()
+        if not Settings.Enabled or not Settings.AutoSteal then return end
+        log("=== E PRESSED — STEAL ===")
+        executeSteal(prompt)
+    end)
+end
+-- PromptShown → prefire
+PPS.PromptShown:Connect(function(prompt)
+    if not Settings.Enabled or not Settings.AutoSteal then return end
+    if not stealPrompts[prompt] then return end
+    if prompt:GetAttribute("State") ~= "Steal" then return end
+    currentVisible = prompt
+    prefireSteal(prompt)
+end)
+-- PromptHidden → clear
+PPS.PromptHidden:Connect(function(prompt)
+    if currentVisible == prompt then
+        currentVisible = nil
+        stealState[prompt] = nil
+        infoStealState.Text = "Idle"
+        infoStealState.TextColor3 = C.textDim
+    end
+end)
+-- Background prefire refresh
+task.spawn(function()
+    while true do
+        task.wait(Settings.PrefireRefresh)
+        if Settings.Enabled and Settings.AutoSteal then
+            local p = currentVisible
+            if p and p.Parent and p:GetAttribute("State") == "Steal" then
+                if not stealState[p] then prefireSteal(p) end
+            end
+        end
+    end
+end)
+
+-- ═══════════════════════════════════════════════════════════════
+-- NON-STEAL PROMPT PROCESSING
+
+-- ═══════════════════════════════════════════════════════════════
+local function processPrompt(prompt)
+    _allWatched[prompt] = true
+    storeOriginal(prompt)
+    local ok, state = pcall(function() return prompt:GetAttribute("State") end)
+    if not ok then return end
+    if state == "Steal" then
+        if Settings.Enabled and Settings.AutoSteal then
+            takeOverStealPrompt(prompt)
+        else
+            -- AutoSteal is OFF: make sure native connections work
+            releaseStealPrompt(prompt)
+        end
+    elseif state == "Sell" then
+        if Settings.Enabled and Settings.InstantSell then
+            disableAntiTamper(prompt) -- kill .Changed + .HoldBegan anti-tamper FIRST
+            pcall(function() prompt.HoldDuration = Settings.SellHoldTime end)
+        else
+            enableAntiTamper(prompt)
+            restoreOriginal(prompt)
+        end
+    elseif state == "Open" then
+        if Settings.Enabled and Settings.InstantOpen then
+            disableAntiTamper(prompt)
+            pcall(function() prompt.HoldDuration = 0 end)
+        else
+            enableAntiTamper(prompt)
+            restoreOriginal(prompt)
+        end
+    elseif state == "Grab" or state == "Place" then
+        if Settings.Enabled and Settings.InstantGrab then
+            disableAntiTamper(prompt)
+            pcall(function() prompt.HoldDuration = 0 end)
+        else
+            enableAntiTamper(prompt)
+            restoreOriginal(prompt)
+        end
+    elseif state == "Return" then
+        if Settings.Enabled and Settings.InstantReturn then
+            disableAntiTamper(prompt)
+            pcall(function() prompt.HoldDuration = 0 end)
+        else
+            enableAntiTamper(prompt)
+            restoreOriginal(prompt)
+        end
+    elseif state == "Purchase" or state == "Buy" then
+        if Settings.Enabled and Settings.InstantPurchase then
+            disableAntiTamper(prompt)
+            pcall(function() prompt.HoldDuration = 0 end)
+        else
+            enableAntiTamper(prompt)
+            restoreOriginal(prompt)
+        end
+    else
+        -- Unknown state but still a proximity prompt — apply generic instant if enabled
+        if Settings.Enabled and Settings.InstantPurchase then
+            disableAntiTamper(prompt)
+            pcall(function()
+                if prompt.HoldDuration > 0 then
+                    storeOriginal(prompt)
+                    prompt.HoldDuration = 0
+                end
+            end)
+        else
+            enableAntiTamper(prompt)
+        end
+    end
+end
+-- Re-process ALL watched prompts (called when ANY setting changes)
+local function reprocessAllPrompts()
+    for prompt in pairs(_allWatched) do
+        if prompt.Parent then
+            pcall(processPrompt, prompt)
+        else
+            _allWatched[prompt] = nil
+        end
+    end
+end
+
+-- ═══ SETTING CHANGE → RE-PROCESS ALL PROMPTS ═══
+-- MUST be here (after reprocessAllPrompts is defined) for Luau scoping to work
+for _, key in ipairs({"Enabled", "AutoSteal", "InstantSell", "InstantOpen", "InstantGrab", "InstantReturn", "InstantPurchase", "SellHoldTime"}) do
+    onSettingChanged(key, function()
+        task.defer(reprocessAllPrompts)
+    end)
+end
+
+-- ═══════════════════════════════════════════════════════════════
+-- __newindex HOOK — Block game from resetting HoldDuration
+
+-- ═══════════════════════════════════════════════════════════════
+if not _S._FP_HOOK_APPLIED then
+    _S._FP_HOOK_APPLIED = true
+    local oldNewIndex
+    oldNewIndex = hookmetamethod(game, "__newindex", function(self, key, value)
+        if Settings.BlockHoldReset and not checkcaller() and key == "HoldDuration" and typeof(self) == "Instance" then
+            -- Skip destroyed instances fast to prevent C++ crash in :IsA()
+            local hasParent = false
+            pcall(function() hasParent = self.Parent ~= nil end)
+            if not hasParent then return oldNewIndex(self, key, value) end
+            local isPrompt = false
+            pcall(function() isPrompt = self:IsA("ProximityPrompt") end)
+            if isPrompt then
+                local ok2, state = pcall(function() return self:GetAttribute("State") end)
+                if ok2 then
+                    if state == "Steal" and Settings.AutoSteal then
+                        return oldNewIndex(self, key, 0)
+                    elseif state == "Sell" and Settings.InstantSell then
+                        return oldNewIndex(self, key, Settings.SellHoldTime)
+                    elseif state == "Open" and Settings.InstantOpen then
+                        return oldNewIndex(self, key, 0)
+                    elseif (state == "Grab" or state == "Place") and Settings.InstantGrab then
+                        return oldNewIndex(self, key, 0)
+                    elseif state == "Return" and Settings.InstantReturn then
+                        return oldNewIndex(self, key, 0)
+                    elseif (state == "Purchase" or state == "Buy") and Settings.InstantPurchase then
+                        return oldNewIndex(self, key, 0)
+                    end
+                end
+            end
+        end
+        return oldNewIndex(self, key, value)
+    end)
+end
+
+-- ═══════════════════════════════════════════════════════════════
+-- STATE CHANGE WATCHER + INITIAL SCAN
+
+-- ═══════════════════════════════════════════════════════════════
+local function watchPrompt(prompt)
+    _allWatched[prompt] = true
+    storeOriginal(prompt)
+    prompt:GetAttributeChangedSignal("State"):Connect(function()
+        if not prompt.Parent then return end
+        local state = prompt:GetAttribute("State")
+        -- Clean slate: re-enable anti-tamper connections before re-processing
+        enableAntiTamper(prompt)
+        if state == "Steal" then
+            -- Re-entering steal state: release first so takeOver is clean
+            releaseStealPrompt(prompt)
+            processPrompt(prompt)
+        else
+            -- Leaving steal state: release native connections back
+            releaseStealPrompt(prompt)
+            processPrompt(prompt)
+        end
+    end)
+end
+-- Scan existing prompts
+for _, d in ipairs(workspace:GetDescendants()) do
+    if d:IsA("ProximityPrompt") then
+        processPrompt(d)
+        watchPrompt(d)
+    end
+end
+-- Watch for new prompts
+workspace.DescendantAdded:Connect(function(d)
+    if d:IsA("ProximityPrompt") then
+        task.defer(function()
+            if not d.Parent then return end
+            processPrompt(d)
+            watchPrompt(d)
+        end)
+    end
+end)
+-- Cleanup removed prompts
+workspace.DescendantRemoving:Connect(function(d)
+    if d:IsA("ProximityPrompt") then
+        disabledMap[d] = nil
+        antiTamperMap[d] = nil
+        takenOver[d] = nil
+        stealState[d] = nil
+        _originalHold[d] = nil
+        _allWatched[d] = nil
+        if stealPrompts[d] then
+            stealPrompts[d] = nil
+            updatePromptCount()
+        end
+        if currentVisible == d then
+            currentVisible = nil
+            infoStealState.Text = "Idle"
+            infoStealState.TextColor3 = C.textDim
+        end
+    end
+end)
+
+-- ═══════════════════════════════════════════════════════════════
+-- STARTUP
+
+-- ═══════════════════════════════════════════════════════════════
+warn("[FP] FasterPrompts v4 loaded!")
+warn("[FP] Net: " .. (_GameNet and "✓" or "✗") .. " | Folder: " .. (_NetFolder and "✓" or "✗"))
+warn("[FP] Remotes from SAB source dump:")
+warn("[FP]   AnimalPrompt  f40f7d9e... +124  (HoldBegan prefire)")
+warn("[FP]   PlotClient    3ba148c9... +31   (Steal execute)")
+warn("[FP]   AnimalCtrl    9ceddac0... +43   (Animal purchase)")
+warn("[FP]   CoinCollect   07205405... +0    (Delivery hitbox)")
+warn("[FP] Click ⚡ icon (top-right) to open settings")
