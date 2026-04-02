@@ -1,0 +1,2687 @@
+-- Animal Overhead Scanner and ESP System
+
+-- Quick place check FIRST (no waiting, no blocking)
+-- ============================================================================
+-- PLACE CHECK
+-- ============================================================================
+local PLACE_ID = 109983668079237
+if game.PlaceId ~= PLACE_ID then
+    print("[Brainrot Index ESP] Wrong place, exiting")
+    return
+end
+
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local CollectionService = game:GetService("CollectionService")
+local HttpService = game:GetService("HttpService")
+
+-- Wait for LocalPlayer (critical for auto-exec!)
+local LocalPlayer = Players.LocalPlayer
+if not LocalPlayer then
+    LocalPlayer = Players:GetPropertyChangedSignal("LocalPlayer"):Wait()
+    LocalPlayer = Players.LocalPlayer
+end
+if not LocalPlayer then
+    repeat task.wait() until Players.LocalPlayer
+    LocalPlayer = Players.LocalPlayer
+end
+
+local Workspace = game.Workspace
+
+-- ============================================================================
+-- CONFIG SYSTEM - Save/Load UI positions
+-- ============================================================================
+local CONFIG_PATH = "astroconfig/indexesp.json"
+local Config = {
+    statusPosition = {scale = {x = 1, y = 0}, offset = {x = -15, y = 15}},
+    statusExpanded = true, -- INDEX PROGRESS expanded by default
+    toIndexPosition = {scale = {x = 1, y = 0}, offset = {x = -310, y = 15}}, -- TO INDEX list position
+    toIndexExpanded = true -- TO INDEX expanded by default
+}
+
+local function ensureConfigFolder()
+    if not isfolder("astroconfig") then
+        makefolder("astroconfig")
+    end
+end
+
+local function loadConfig()
+    pcall(function()
+        if isfile(CONFIG_PATH) then
+            local data = readfile(CONFIG_PATH)
+            local loaded = HttpService:JSONDecode(data)
+            if loaded then
+                if loaded.statusPosition then Config.statusPosition = loaded.statusPosition end
+                if loaded.statusExpanded ~= nil then Config.statusExpanded = loaded.statusExpanded end
+                if loaded.toIndexPosition then Config.toIndexPosition = loaded.toIndexPosition end
+                if loaded.toIndexExpanded ~= nil then Config.toIndexExpanded = loaded.toIndexExpanded end
+            end
+        end
+    end)
+end
+
+local function saveConfig()
+    pcall(function()
+        ensureConfigFolder()
+        local data = HttpService:JSONEncode(Config)
+        writefile(CONFIG_PATH, data)
+    end)
+end
+
+-- Load config on startup (fast, file read only)
+loadConfig()
+
+-- Wait for game to load before requiring modules
+if not game:IsLoaded() then
+    game.Loaded:Wait()
+end
+
+-- Small delay to let other scripts initialize
+task.wait(0.3)
+
+-- Require the game modules (EXACTLY like the game does)
+local Packages = ReplicatedStorage:WaitForChild("Packages", 10)
+if not Packages then return end
+
+local Synchronizer = require(Packages.Synchronizer)
+local Observers = require(Packages.Observers) -- Same observer pattern the game uses
+local Gradients = require(Packages.Gradients) -- For animated gradient text
+
+local Datas = ReplicatedStorage:WaitForChild("Datas", 10)
+if not Datas then return end
+
+local AnimalsData = require(Datas.Animals)      -- Animal info: DisplayName, Rarity, HideFromIndex, IsEnabled
+local IndexData = require(Datas.Index)          -- Mutation info: IsMutation, CustomIndex, LimitedMutation
+local MutationsData = require(Datas.Mutations)  -- Mutation visual configs
+local RaritiesData = require(Datas.Rarities)    -- Rarity colors/gradients
+
+-- SharedIndex for accurate index counts
+local SharedIndex = require(ReplicatedStorage.Shared.Index)
+
+-- ============================================================================
+-- HOOK INTO GAME'S ANIMAL CONTROLLER FOR INSTANT UPDATES
+-- ============================================================================
+local Controllers = ReplicatedStorage:WaitForChild("Controllers", 10)
+if not Controllers then return end
+
+local AnimalController = require(Controllers.AnimalController)
+
+-- ============================================================================
+-- ANIMAL INDEX CHECKER - Uses EXACT game logic from StudyThis.lua lines 5904-5918
+-- ============================================================================
+-- Game logic explained:
+-- v63 = mutation type (e.g., "Albino", "Gold", "Default")
+-- v64 = IsMutation flag from IndexData[mutation]
+-- v65 = playerData.Index[animalName] (the animal's index entry)
+-- v66 = indexed check result
+--
+-- if CustomIndex exists: check v65[CustomIndex.Name]
+-- elseif IsMutation: check v65[mutationName] 
+-- else (Default): check next(v65) ~= nil (any entry exists)
+-- ============================================================================
+local AnimalIndexChecker = {}
+
+-- Debug flag - set to true to see detailed logging for all index checks
+AnimalIndexChecker.DebugMode = false
+
+function AnimalIndexChecker:IsAnimalIndexed(player, animalName, mutationType)
+    -- Get player data via Synchronizer (same as game)
+    local playerData = Synchronizer:Get(player)
+    if not playerData then 
+        if self.DebugMode then print("[IndexCheck] No playerData") end
+        return false 
+    end
+    
+    -- Get index data (same as game: v42:Get({"Index", animalName}))
+    local indexData = playerData:Get("Index")
+    if not indexData then 
+        if self.DebugMode then print("[IndexCheck] No indexData") end
+        return false 
+    end
+    
+    -- Get this animal's index entry (v65 in game)
+    local animalIndex = indexData[animalName]
+    if not animalIndex then 
+        if self.DebugMode then print("[IndexCheck]", animalName, "not in player's index at all") end
+        return false 
+    end
+    
+    -- Normalize mutation variant (nil, empty string, "Normal" -> "Default")
+    local variant = self:NormalizeMutation(mutationType)
+    
+    -- Get mutation info from IndexData (only mutations have entries, "Default" returns nil)
+    local mutationInfo = IndexData[variant]
+    
+    if self.DebugMode then
+        print("[IndexCheck] Checking:", animalName, "Mutation:", variant)
+        print("[IndexCheck] AnimalIndex contents:", HttpService:JSONEncode(animalIndex))
+        if mutationInfo then
+            print("[IndexCheck] MutationInfo: IsMutation=", mutationInfo.IsMutation, "CustomIndex=", mutationInfo.CustomIndex and mutationInfo.CustomIndex.Name or "nil")
+        else
+            print("[IndexCheck] MutationInfo: nil (Default or unknown mutation)")
+        end
+    end
+    
+    -- ========================================================================
+    -- GAME LOGIC from IndexController.lua and Shared_Index.lua:
+    -- 
+    -- The game checks: playerIndex[animalName][mutationKey]
+    -- 
+    -- For CustomIndex mutations (rare): check animalIndex[CustomIndex.Name]
+    -- For normal mutations (Gold, Diamond, etc): check animalIndex[mutationName]
+    -- For Default (no mutation / nil mutationInfo): check animalIndex["Default"]
+    -- ========================================================================
+    
+    if mutationInfo and mutationInfo.CustomIndex then
+        -- CustomIndex mutations (special handling like Aquatic)
+        local customKey = mutationInfo.CustomIndex.Name
+        local value = animalIndex[customKey]
+        if self.DebugMode then print("[IndexCheck] CustomIndex key:", customKey, "value:", value) end
+        return value ~= nil
+    elseif mutationInfo and mutationInfo.IsMutation then
+        -- Normal mutation check - look for specific mutation entry
+        local value = animalIndex[variant]
+        if self.DebugMode then print("[IndexCheck] Mutation key:", variant, "value:", value) end
+        return value ~= nil
+    else
+        -- Default/unknown mutation - check for "Default" key
+        -- This matches game logic: v22[v13 and v13 or "Default"]
+        local value = animalIndex["Default"]
+        if self.DebugMode then print("[IndexCheck] Default key value:", value) end
+        return value ~= nil
+    end
+end
+
+-- Normalize mutation name (nil, empty, "Normal" -> "Default")
+function AnimalIndexChecker:NormalizeMutation(mutation)
+    if not mutation or mutation == "" or mutation == "Normal" then
+        return "Default"
+    end
+    return mutation
+end
+
+-- Get the proper animal name (internal name, not display name)
+function AnimalIndexChecker:GetInternalName(displayName)
+    -- Search AnimalsData for matching DisplayName
+    for internalName, animalData in pairs(AnimalsData) do
+        if animalData.DisplayName == displayName then
+            return internalName
+        end
+    end
+    -- If no match found, return the display name as-is (might already be internal)
+    return displayName
+end
+
+-- Check if an animal can be shown in the index (same logic as game's SharedIndex:CanShowInIndex)
+-- This filters out:
+-- 1. Animals with HideFromIndex = true (Lucky Blocks, etc.)
+-- 2. Animals with IsEnabled() returning false (new animals not yet added to index like Los Gattitos)
+-- 3. Animals not in AnimalsData at all
+function AnimalIndexChecker:CanShowInIndex(animalName)
+    -- Use the game's actual SharedIndex method which handles all the complex logic
+    return SharedIndex:CanShowInIndex(animalName)
+end
+
+-- Check if an animal counts toward index completion (excludes admin/hidden animals)
+-- Admin animals have HideFromIndex = true - they don't count for milestone
+-- NOTE: Index V2 may have set HideFromIndex = false, so we also check the cached original state
+function AnimalIndexChecker:CountsTowardIndex(animalName)
+    local animalData = AnimalsData[animalName]
+    if not animalData then return false end
+    
+    -- Check HideFromIndex flag - this is what excludes admin animals from counting
+    if animalData.HideFromIndex then
+        return false
+    end
+    
+    -- ALSO check if Index V2 cached this as originally hidden (it may have unhidden it for display)
+    if _G.IndexV2_OriginallyHiddenAnimals and _G.IndexV2_OriginallyHiddenAnimals[animalName] then
+        return false
+    end
+    
+    -- Also check IsEnabled if it exists (some animals not yet added to game)
+    if animalData.IsEnabled and type(animalData.IsEnabled) == "function" then
+        if not animalData:IsEnabled() then
+            return false
+        end
+    end
+    
+    return true
+end
+
+-- Check if an animal is required for a specific mutation's index
+-- Some mutations (Bloodrot, Candy, Lava, Galaxy, etc.) have a specific list of required animals
+-- If no specific list exists, falls back to CountsTowardIndex check (excludes admin animals)
+function AnimalIndexChecker:IsAnimalRequiredForMutation(animalName, mutation)
+    local normalizedMutation = self:NormalizeMutation(mutation)
+    local mutationInfo = IndexData[normalizedMutation]
+    
+    if mutationInfo and mutationInfo.Index then
+        -- This mutation has a specific list of required animals
+        -- Check if our animal is in that list
+        return mutationInfo.Index[animalName] ~= nil
+    else
+        -- No specific list - use CountsTowardIndex which excludes admin/hidden animals
+        -- This applies to Gold, Diamond, Rainbow, Default, etc.
+        return self:CountsTowardIndex(animalName)
+    end
+end
+
+-- Get remaining count for a mutation using SharedIndex (same as Index Viewer)
+function AnimalIndexChecker:GetRemainingForMutation(mutation)
+    local normalizedMutation = self:NormalizeMutation(mutation)
+    local collected, needed, total = SharedIndex:GetIndexAnimals(LocalPlayer, normalizedMutation)
+    if collected and needed then
+        -- Never return negative (player may have collected bonus animals)
+        return math.max(0, needed - collected)
+    end
+    return 0
+end
+
+-- Scanner Functions
+local Scanner = {}
+
+-- Helper: Check if animal is stealable based on game code logic
+-- From PlotClient.lua:
+-- From PlotClient.lua line 520:
+--   elseif v107 and (not v107.Machine or not v107.Machine.Active) then
+-- This means: Animal is stealable if NO Machine OR Machine.Active = false
+-- Only Machine.Active = true blocks stealing!
+function Scanner:GetAnimalStatus(plot, animalIndex)
+    if not plot then return "stealable", nil end
+    
+    local status = "stealable"
+    local statusInfo = nil
+    
+    pcall(function()
+        local channel = Synchronizer:Wait(plot.Name)
+        if channel then
+            local animalList = channel:Get("AnimalList")
+            if animalList then
+                for slotKey, animalData in pairs(animalList) do
+                    if type(animalData) == "table" and animalData.Index == animalIndex then
+                        -- Only ACTIVE machine processing blocks stealing!
+                        -- Machine.Active = false (FUSING READY/CRAFTING READY) is STILL STEALABLE!
+                        if animalData.Machine and animalData.Machine.Active == true then
+                            local machineType = animalData.Machine.Type
+                            
+                            if machineType == "Fuse" then
+                                status = "fusing"  -- Actively fusing = can't steal
+                            elseif machineType == "Crafting" then
+                                status = "crafting"  -- Actively crafting = can't steal
+                            else
+                                status = "processing"  -- In any active machine = can't steal
+                            end
+                            statusInfo = animalData.Machine
+                        end
+                        -- Machine.Active = false or no Machine = STEALABLE!
+                        break
+                    end
+                end
+            end
+        end
+    end)
+    
+    return status, statusInfo
+end
+
+-- Helper to check if a plot belongs to the local player
+function Scanner:IsLocalPlayerPlot(plot)
+    -- The game sets PlotSign.YourBase.Enabled = true for the local player's plot
+    -- See PlotClient.lua line 870: v187.PlotModel.PlotSign.YourBase.Enabled = v187:GetOwner() == l_LocalPlayer_0;
+    local plotSign = plot:FindFirstChild("PlotSign")
+    if plotSign then
+        local yourBase = plotSign:FindFirstChild("YourBase")
+        if yourBase then
+            -- Check if it's a BillboardGui and is enabled
+            if yourBase:IsA("BillboardGui") and yourBase.Enabled == true then
+                return true
+            end
+        end
+    end
+    
+    return false
+end
+
+function Scanner:FindAllAnimalOverheads()
+    local overheads = {}
+    local skippedOwnPlot = false
+    local seenModels = {} -- Track models we've already added to prevent duplicates
+    
+    -- Search in Plots folder (animals on bases/podiums)
+    local plots = Workspace:FindFirstChild("Plots")
+    if plots then
+        for _, plot in ipairs(plots:GetChildren()) do
+            -- SKIP LOCAL PLAYER'S PLOT - you don't need to index your own animals!
+            if Scanner:IsLocalPlayerPlot(plot) then
+                skippedOwnPlot = true
+                continue
+            end
+            
+            -- Find animal MODELS directly on the plot
+            -- The game clones models from ReplicatedStorage.Models.Animals and parents them to plot
+            -- Model.Name = internal animal name (e.g., "1x1x1x1")
+            for _, child in ipairs(plot:GetChildren()) do
+                if child:IsA("Model") and child.Name ~= "AnimalPodiums" then
+                    local primaryPart = child.PrimaryPart or child:FindFirstChildWhichIsA("BasePart")
+                    if primaryPart then
+                        local internalName = child.Name
+                        
+                        -- FILTER: Only include if it's a known animal in AnimalsData
+                        if not AnimalsData[internalName] then
+                            continue
+                        end
+                        
+                        local mutation = child:GetAttribute("Mutation")
+                        
+                        -- Try to find the overhead attachment (quick non-recursive first)
+                        local overheadAttachment = child:FindFirstChild("OVERHEAD_ATTACHMENT")
+                        if not overheadAttachment then
+                            -- Try one level deeper (common structure: Model > Head > OVERHEAD_ATTACHMENT)
+                            local head = child:FindFirstChild("Head")
+                            if head then
+                                overheadAttachment = head:FindFirstChild("OVERHEAD_ATTACHMENT")
+                            end
+                        end
+                        local overhead = nil
+                        if overheadAttachment then
+                            overhead = overheadAttachment:FindFirstChild("AnimalOverhead")
+                        end
+                        
+                        -- Find matching podium by position
+                        local podiums = plot:FindFirstChild("AnimalPodiums")
+                        local matchingPodium = nil
+                        if podiums then
+                            for _, podium in ipairs(podiums:GetChildren()) do
+                                local base = podium:FindFirstChild("Base")
+                                if base then
+                                    local spawn = base:FindFirstChild("Spawn")
+                                    if spawn then
+                                        local spawnPos = spawn:GetPivot().Position
+                                        local modelPos = child:GetPivot().Position
+                                        if (modelPos - spawnPos).Magnitude < 10 then
+                                            matchingPodium = podium
+                                            break
+                                        end
+                                    end
+                                end
+                            end
+                        end
+                        
+                        -- Mark this model as seen to prevent duplicates
+                        seenModels[child] = true
+                        
+                        -- Check if animal is stealable (only Machine.Active = true is NOT stealable)
+                        local status, statusInfo = Scanner:GetAnimalStatus(plot, internalName)
+                        
+                        table.insert(overheads, {
+                            overhead = overhead,
+                            podium = matchingPodium,
+                            plot = plot,
+                            spawn = primaryPart,
+                            animalModel = child,
+                            source = "Podium",
+                            internalName = internalName,
+                            mutation = mutation,
+                            status = status,
+                            statusInfo = statusInfo
+                        })
+                    end
+                end
+            end
+        end
+    end
+    
+    -- Search in RenderedMovingAnimals (animals walking in the world)
+    local renderedAnimals = Workspace:FindFirstChild("RenderedMovingAnimals")
+    if renderedAnimals then
+        for _, animalModel in ipairs(renderedAnimals:GetChildren()) do
+            -- Skip if we already added this model from the Plots scan
+            if seenModels[animalModel] then
+                continue
+            end
+            -- Use the Index attribute for internal name (same as AnimalController uses)
+            local internalName = animalModel:GetAttribute("Index") or animalModel.Name
+            local mutation = animalModel:GetAttribute("Mutation")
+            
+            -- FILTER: Only include if it's a known animal in AnimalsData
+            if not AnimalsData[internalName] then
+                continue
+            end
+            
+            -- Find the overhead attachment (quick non-recursive search first)
+            local overheadAttachment = animalModel:FindFirstChild("OVERHEAD_ATTACHMENT")
+            if not overheadAttachment then
+                -- Try one level deeper (common structure: Model > Head > OVERHEAD_ATTACHMENT)
+                local head = animalModel:FindFirstChild("Head")
+                if head then
+                    overheadAttachment = head:FindFirstChild("OVERHEAD_ATTACHMENT")
+                end
+            end
+            
+            local overhead = nil
+            if overheadAttachment then
+                overhead = overheadAttachment:FindFirstChild("AnimalOverhead")
+            end
+            
+            -- Get mutation from overhead UI if not set as attribute
+            local displayMutation = mutation
+            if not displayMutation and overhead then
+                local mutationLabel = overhead:FindFirstChild("Mutation")
+                if mutationLabel and mutationLabel:IsA("TextLabel") and mutationLabel.Visible then
+                    local mutText = mutationLabel.Text:gsub("<.->", ""):match("^%s*(.-)%s*$") or ""
+                    if mutText ~= "" then
+                        displayMutation = mutText
+                    end
+                end
+            end
+            
+            -- ALWAYS add world animals to the list (don't skip based on overhead)
+            -- World animals are walking around, so they're always stealable (no machine check needed)
+            local primaryPart = animalModel.PrimaryPart or animalModel:FindFirstChildWhichIsA("BasePart")
+            if primaryPart then
+                table.insert(overheads, {
+                    overhead = overhead,
+                    animalModel = animalModel,
+                    spawn = primaryPart,
+                    attachment = overheadAttachment,
+                    source = "World",
+                    internalName = internalName,
+                    mutation = displayMutation,
+                    status = "stealable" -- World animals are always stealable
+                })
+            end
+        end
+    end
+    
+    return overheads
+end
+
+function Scanner:PrintOverheadInfo(overheadData)
+    -- Debug function - only prints when AnimalIndexChecker.DebugMode is enabled
+    if not AnimalIndexChecker.DebugMode then return end
+    print("[DEBUG] Animal:", overheadData.source, overheadData.internalName or "?")
+end
+
+function Scanner:GetAnimalNameFromOverhead(overhead)
+    local displayName = overhead:FindFirstChild("DisplayName")
+    if displayName and displayName:IsA("TextLabel") then
+        -- Clean up the text (remove "Creature" or other suffixes if needed)
+        local text = displayName.Text
+        return text
+    end
+    return nil
+end
+
+function Scanner:GetMutationFromOverhead(overhead)
+    local mutation = overhead:FindFirstChild("Mutation")
+    if mutation and mutation:IsA("TextLabel") then
+        -- IMPORTANT: Check if mutation label is visible first!
+        -- If not visible, the animal has no mutation (Default)
+        if not mutation.Visible then
+            return "Default"
+        end
+        
+        local mutationText = mutation.Text
+        
+        -- Clean up rich text tags like <stroke>Gold</stroke>
+        if mutationText and mutationText ~= "" then
+            mutationText = mutationText:gsub("<.->", "")
+            -- Trim whitespace
+            mutationText = mutationText:match("^%s*(.-)%s*$") or ""
+            
+            if mutationText ~= "" then
+                return mutationText
+            end
+        end
+    end
+    
+    return "Default"
+end
+
+function Scanner:GetAnimalInfo(overheadData)
+    local info = {}
+    local overhead = overheadData.overhead
+    
+    -- PRIORITY: Use attributes from model if available (most accurate)
+    -- Both podium and world animals have attributes set on their models
+    if overheadData.internalName then
+        info.internalName = overheadData.internalName
+        info.mutation = overheadData.mutation or "Default"
+        
+        -- Get display name and rarity from AnimalsData using internal name
+        if AnimalsData[info.internalName] then
+            info.displayName = AnimalsData[info.internalName].DisplayName
+            info.rarity = AnimalsData[info.internalName].Rarity
+        else
+            -- Fallback: use internal name as display name
+            info.displayName = info.internalName
+        end
+    elseif overhead then
+        -- Fallback: Parse from overhead UI (less accurate, may have rich text issues)
+        info.displayName = Scanner:GetAnimalNameFromOverhead(overhead)
+        info.mutation = Scanner:GetMutationFromOverhead(overhead)
+        
+        local rarity = overhead:FindFirstChild("Rarity")
+        if rarity and rarity:IsA("TextLabel") then
+            info.rarity = rarity.Text
+        end
+    end
+    
+    -- Get additional info from overhead if available
+    if overhead then
+        local generation = overhead:FindFirstChild("Generation")
+        if generation and generation:IsA("TextLabel") then
+            info.generation = generation.Text
+        end
+        
+        local price = overhead:FindFirstChild("Price")
+        if price and price:IsA("TextLabel") then
+            info.price = price.Text
+        end
+        
+        local stolen = overhead:FindFirstChild("Stolen")
+        if stolen and stolen:IsA("TextLabel") then
+            info.isStolen = stolen.Visible and stolen.Text == "STOLEN"
+        end
+    end
+    
+    return info
+end
+
+-- ESP System
+local ESP = {}
+ESP.ActiveESPs = {}
+ESP.Enabled = false
+ESP.Stats = {
+    byRarity = {},      -- Count of NOT indexed animals by rarity
+    byMutation = {},    -- Count of NOT indexed animals by mutation
+    total = 0,          -- Total NOT indexed count
+    animals = {}        -- List of animals that need indexing (for TO INDEX HUD)
+}
+
+-- ============================================================================
+-- NOTIFICATION UI - Bottom left corner showing count to index
+-- ============================================================================
+local NotificationUI = {}
+NotificationUI.ScreenGui = nil
+NotificationUI.Label = nil
+
+function NotificationUI:Create()
+    -- Only create if it doesn't exist
+    if self.ScreenGui and self.ScreenGui.Parent then
+        return
+    end
+    
+    local playerGui = LocalPlayer:WaitForChild("PlayerGui")
+    
+    -- Create ScreenGui
+    local screenGui = Instance.new("ScreenGui")
+    screenGui.Name = "IndexNotification"
+    screenGui.ResetOnSpawn = false
+    screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    screenGui.DisplayOrder = 999
+    screenGui.Parent = playerGui
+    self.ScreenGui = screenGui
+    
+    -- ========================================================================
+    -- TO INDEX HUD - Collapsible scrollable list of animals needing indexing
+    -- ========================================================================
+    local TOINDEX_COLLAPSED_SIZE = UDim2.new(0, 280, 0, 40)
+    local TOINDEX_EXPANDED_SIZE = UDim2.new(0, 280, 0, 300)
+    
+    local toIndexFrame = Instance.new("Frame")
+    toIndexFrame.Name = "NotifFrame"
+    toIndexFrame.Size = Config.toIndexExpanded and TOINDEX_EXPANDED_SIZE or TOINDEX_COLLAPSED_SIZE
+    toIndexFrame.AnchorPoint = Vector2.new(1, 0)
+    toIndexFrame.Position = UDim2.new(
+        Config.toIndexPosition.scale.x, Config.toIndexPosition.offset.x,
+        Config.toIndexPosition.scale.y, Config.toIndexPosition.offset.y
+    )
+    toIndexFrame.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
+    toIndexFrame.BackgroundTransparency = 0
+    toIndexFrame.BorderSizePixel = 0
+    toIndexFrame.ClipsDescendants = true
+    toIndexFrame.Parent = screenGui
+    
+    local toIndexCorner = Instance.new("UICorner")
+    toIndexCorner.CornerRadius = UDim.new(0, 8)
+    toIndexCorner.Parent = toIndexFrame
+    
+    local toIndexStroke = Instance.new("UIStroke")
+    toIndexStroke.Name = "UIStroke"
+    toIndexStroke.Color = Color3.fromRGB(180, 60, 60)
+    toIndexStroke.Thickness = 2
+    toIndexStroke.Transparency = 0
+    toIndexStroke.Parent = toIndexFrame
+    
+    -- Title bar (for dragging and collapse button)
+    local toIndexTitleBar = Instance.new("Frame")
+    toIndexTitleBar.Name = "TitleBar"
+    toIndexTitleBar.Size = UDim2.new(1, 0, 0, 36)
+    toIndexTitleBar.Position = UDim2.new(0, 0, 0, 0)
+    toIndexTitleBar.BackgroundTransparency = 1
+    toIndexTitleBar.Parent = toIndexFrame
+    
+    -- Emoji label (separate so gradient doesn't affect it)
+    local toIndexEmoji = Instance.new("TextLabel")
+    toIndexEmoji.Name = "TitleEmoji"
+    toIndexEmoji.Size = UDim2.new(0, 20, 0, 30)
+    toIndexEmoji.Position = UDim2.new(0, 8, 0, 5)
+    toIndexEmoji.BackgroundTransparency = 1
+    toIndexEmoji.Text = "🔍"
+    toIndexEmoji.TextSize = 16
+    toIndexEmoji.Font = Enum.Font.GothamBold
+    toIndexEmoji.TextXAlignment = Enum.TextXAlignment.Left
+    toIndexEmoji.Parent = toIndexTitleBar
+    
+    -- Title label with Gold color
+    local toIndexTitle = Instance.new("TextLabel")
+    toIndexTitle.Name = "Title"
+    toIndexTitle.Size = UDim2.new(1, -70, 0, 30)
+    toIndexTitle.Position = UDim2.new(0, 32, 0, 5)
+    toIndexTitle.BackgroundTransparency = 1
+    toIndexTitle.Text = "TO INDEX"
+    toIndexTitle.TextColor3 = Color3.fromRGB(255, 215, 0)
+    toIndexTitle.TextSize = 16
+    toIndexTitle.Font = Enum.Font.GothamBlack
+    toIndexTitle.TextXAlignment = Enum.TextXAlignment.Left
+    toIndexTitle.Parent = toIndexTitleBar
+    
+    -- Add UIStroke for readability
+    local toIndexTitleStroke = Instance.new("UIStroke")
+    toIndexTitleStroke.Thickness = 1.5
+    toIndexTitleStroke.Color = Color3.new(0, 0, 0)
+    toIndexTitleStroke.Parent = toIndexTitle
+    
+    -- Count label (shows total count in title bar)
+    local toIndexCount = Instance.new("TextLabel")
+    toIndexCount.Name = "CountLabel"
+    toIndexCount.Size = UDim2.new(0, 60, 0, 30)
+    toIndexCount.Position = UDim2.new(1, -100, 0, 5)
+    toIndexCount.BackgroundTransparency = 1
+    toIndexCount.RichText = true
+    toIndexCount.Text = "0"
+    toIndexCount.TextColor3 = Color3.fromRGB(255, 100, 100)
+    toIndexCount.TextSize = 16
+    toIndexCount.Font = Enum.Font.GothamBold
+    toIndexCount.TextXAlignment = Enum.TextXAlignment.Right
+    toIndexCount.Parent = toIndexTitleBar
+    self.Label = toIndexCount
+    
+    -- Expand/Collapse button
+    local toIndexExpandBtn = Instance.new("TextButton")
+    toIndexExpandBtn.Name = "ExpandBtn"
+    toIndexExpandBtn.Size = UDim2.new(0, 30, 0, 30)
+    toIndexExpandBtn.Position = UDim2.new(1, -35, 0, 4)
+    toIndexExpandBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
+    toIndexExpandBtn.Text = Config.toIndexExpanded and "▲" or "▼"
+    toIndexExpandBtn.TextColor3 = Color3.fromRGB(180, 180, 180)
+    toIndexExpandBtn.TextSize = 14
+    toIndexExpandBtn.Font = Enum.Font.GothamBold
+    toIndexExpandBtn.AutoButtonColor = true
+    toIndexExpandBtn.Parent = toIndexTitleBar
+    
+    local toIndexExpandCorner = Instance.new("UICorner")
+    toIndexExpandCorner.CornerRadius = UDim.new(0, 6)
+    toIndexExpandCorner.Parent = toIndexExpandBtn
+    
+    -- Scrolling frame for animal list
+    local toIndexScrollFrame = Instance.new("ScrollingFrame")
+    toIndexScrollFrame.Name = "AnimalList"
+    toIndexScrollFrame.Size = UDim2.new(1, -10, 1, -42)
+    toIndexScrollFrame.Position = UDim2.new(0, 5, 0, 38)
+    toIndexScrollFrame.BackgroundTransparency = 1
+    toIndexScrollFrame.BorderSizePixel = 0
+    toIndexScrollFrame.ScrollBarThickness = 6
+    toIndexScrollFrame.ScrollBarImageColor3 = Color3.fromRGB(80, 80, 100)
+    toIndexScrollFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
+    toIndexScrollFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    toIndexScrollFrame.Visible = Config.toIndexExpanded
+    toIndexScrollFrame.Parent = toIndexFrame
+    self.AnimalListScroll = toIndexScrollFrame
+    self.ToIndexFrame = toIndexFrame  -- Store reference for dynamic height
+    self.ToIndexListLayout = nil  -- Will be set below
+    
+    local toIndexListLayout = Instance.new("UIListLayout")
+    toIndexListLayout.FillDirection = Enum.FillDirection.Vertical
+    toIndexListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    toIndexListLayout.Padding = UDim.new(0, 2)
+    toIndexListLayout.Parent = toIndexScrollFrame
+    self.ToIndexListLayout = toIndexListLayout  -- Store reference
+    
+    -- Store collapsed size constant for dynamic sizing
+    self.TOINDEX_COLLAPSED_SIZE = TOINDEX_COLLAPSED_SIZE
+    self.TOINDEX_TITLE_HEIGHT = 42  -- Title bar + padding
+    self.TOINDEX_MAX_HEIGHT = 400   -- Maximum height when expanded
+    self.TOINDEX_MIN_CONTENT_HEIGHT = 60  -- Minimum content area
+    
+    -- Expand/Collapse toggle
+    toIndexExpandBtn.MouseButton1Click:Connect(function()
+        Config.toIndexExpanded = not Config.toIndexExpanded
+        toIndexExpandBtn.Text = Config.toIndexExpanded and "▲" or "▼"
+        
+        if Config.toIndexExpanded then
+            -- When expanding, calculate dynamic height
+            self:AdjustToIndexHeight()
+        else
+            toIndexFrame.Size = TOINDEX_COLLAPSED_SIZE
+        end
+        
+        toIndexScrollFrame.Visible = Config.toIndexExpanded
+        saveConfig()
+    end)
+    
+    -- Make it draggable via title bar
+    local toIndexDragging, toIndexDragInput, toIndexDragStart, toIndexStartPos
+    
+    toIndexTitleBar.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            -- Bring to front
+            screenGui.DisplayOrder = 10000
+            toIndexDragging = true
+            toIndexDragStart = input.Position
+            toIndexStartPos = toIndexFrame.Position
+            
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    toIndexDragging = false
+                    screenGui.DisplayOrder = 999 -- Reset to normal
+                    Config.toIndexPosition = {
+                        scale = {x = toIndexFrame.Position.X.Scale, y = toIndexFrame.Position.Y.Scale},
+                        offset = {x = toIndexFrame.Position.X.Offset, y = toIndexFrame.Position.Y.Offset}
+                    }
+                    saveConfig()
+                end
+            end)
+        end
+    end)
+    
+    toIndexTitleBar.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+            toIndexDragInput = input
+        end
+    end)
+    
+    game:GetService("UserInputService").InputChanged:Connect(function(input)
+        if input == toIndexDragInput and toIndexDragging then
+            local delta = input.Position - toIndexDragStart
+            toIndexFrame.Position = UDim2.new(toIndexStartPos.X.Scale, toIndexStartPos.X.Offset + delta.X, toIndexStartPos.Y.Scale, toIndexStartPos.Y.Offset + delta.Y)
+        end
+    end)
+    
+    -- ========================================================================
+    -- STATUS BOX - Shows progress for ALL mutations (SCROLLABLE + COLLAPSIBLE)
+    -- ========================================================================
+    local STATUS_COLLAPSED_SIZE = UDim2.new(0, 280, 0, 40)
+    local STATUS_EXPANDED_SIZE = UDim2.new(0, 280, 0, 350)
+    
+    local statusFrame = Instance.new("Frame")
+    statusFrame.Name = "StatusFrame"
+    statusFrame.Size = Config.statusExpanded and STATUS_EXPANDED_SIZE or STATUS_COLLAPSED_SIZE
+    statusFrame.AnchorPoint = Vector2.new(1, 0)
+    -- Load saved position
+    statusFrame.Position = UDim2.new(
+        Config.statusPosition.scale.x, Config.statusPosition.offset.x,
+        Config.statusPosition.scale.y, Config.statusPosition.offset.y
+    )
+    statusFrame.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
+    statusFrame.BackgroundTransparency = 0
+    statusFrame.BorderSizePixel = 0
+    statusFrame.ClipsDescendants = true
+    statusFrame.Parent = screenGui
+    
+    local statusCorner = Instance.new("UICorner")
+    statusCorner.CornerRadius = UDim.new(0, 8)
+    statusCorner.Parent = statusFrame
+    
+    local statusStroke = Instance.new("UIStroke")
+    statusStroke.Name = "UIStroke"
+    statusStroke.Color = Color3.fromRGB(80, 80, 100)
+    statusStroke.Thickness = 2
+    statusStroke.Transparency = 0
+    statusStroke.Parent = statusFrame
+    
+    -- Title bar (for dragging and buttons)
+    local statusTitleBar = Instance.new("Frame")
+    statusTitleBar.Name = "TitleBar"
+    statusTitleBar.Size = UDim2.new(1, 0, 0, 36)
+    statusTitleBar.Position = UDim2.new(0, 0, 0, 0)
+    statusTitleBar.BackgroundTransparency = 1
+    statusTitleBar.Parent = statusFrame
+    
+    -- Emoji label (separate so gradient doesn't affect it)
+    local statusEmoji = Instance.new("TextLabel")
+    statusEmoji.Name = "StatusEmoji"
+    statusEmoji.Size = UDim2.new(0, 20, 0, 30)
+    statusEmoji.Position = UDim2.new(0, 8, 0, 5)
+    statusEmoji.BackgroundTransparency = 1
+    statusEmoji.Text = "📊"
+    statusEmoji.TextSize = 14
+    statusEmoji.Font = Enum.Font.GothamBlack
+    statusEmoji.TextXAlignment = Enum.TextXAlignment.Left
+    statusEmoji.Parent = statusTitleBar
+    
+    -- Status title at top (fixed, not scrolling) with Admin gradient
+    local statusTitle = Instance.new("TextLabel")
+    statusTitle.Name = "StatusTitle"
+    statusTitle.Size = UDim2.new(1, -90, 0, 30)
+    statusTitle.Position = UDim2.new(0, 28, 0, 5)
+    statusTitle.BackgroundTransparency = 1
+    statusTitle.Text = "INDEX PROGRESS"
+    statusTitle.TextColor3 = Color3.new(1, 1, 1)
+    statusTitle.TextSize = 14
+    statusTitle.Font = Enum.Font.GothamBlack
+    statusTitle.TextXAlignment = Enum.TextXAlignment.Left
+    statusTitle.Parent = statusTitleBar
+    
+    -- Add UIStroke like game does for rarity labels with gradients
+    local statusTitleStroke = Instance.new("UIStroke")
+    statusTitleStroke.Thickness = 1.5
+    statusTitleStroke.Color = Color3.new(0, 0, 0)
+    statusTitleStroke.Parent = statusTitle
+    
+    -- Apply Admin gradient using game's RaritiesData.Admin.GradientPreset
+    pcall(function()
+        local adminRarity = RaritiesData.Admin
+        if adminRarity and adminRarity.GradientPreset then
+            Gradients.apply(statusTitle, adminRarity.GradientPreset)
+        end
+    end)
+    
+    -- UNLOAD button (X) - rightmost
+    local statusUnloadBtn = Instance.new("TextButton")
+    statusUnloadBtn.Name = "UnloadBtn"
+    statusUnloadBtn.Size = UDim2.new(0, 28, 0, 28)
+    statusUnloadBtn.Position = UDim2.new(1, -34, 0, 4)
+    statusUnloadBtn.BackgroundColor3 = Color3.fromRGB(120, 40, 40)
+    statusUnloadBtn.BorderSizePixel = 0
+    statusUnloadBtn.Text = "✕"
+    statusUnloadBtn.TextColor3 = Color3.fromRGB(255, 100, 100)
+    statusUnloadBtn.TextSize = 16
+    statusUnloadBtn.Font = Enum.Font.GothamBold
+    statusUnloadBtn.Parent = statusTitleBar
+    
+    local statusUnloadCorner = Instance.new("UICorner")
+    statusUnloadCorner.CornerRadius = UDim.new(0, 4)
+    statusUnloadCorner.Parent = statusUnloadBtn
+    
+    -- Expand/Collapse button - next to unload
+    local statusExpandBtn = Instance.new("TextButton")
+    statusExpandBtn.Name = "ExpandBtn"
+    statusExpandBtn.Size = UDim2.new(0, 28, 0, 28)
+    statusExpandBtn.Position = UDim2.new(1, -66, 0, 4)
+    statusExpandBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
+    statusExpandBtn.BorderSizePixel = 0
+    statusExpandBtn.Text = Config.statusExpanded and "▲" or "▼"
+    statusExpandBtn.TextColor3 = Color3.fromRGB(140, 140, 160)
+    statusExpandBtn.TextSize = 12
+    statusExpandBtn.Font = Enum.Font.GothamBold
+    statusExpandBtn.Parent = statusTitleBar
+    
+    local statusExpandCorner = Instance.new("UICorner")
+    statusExpandCorner.CornerRadius = UDim.new(0, 4)
+    statusExpandCorner.Parent = statusExpandBtn
+    
+    -- Scrolling frame for mutation list
+    local scrollFrame = Instance.new("ScrollingFrame")
+    scrollFrame.Name = "ScrollContent"
+    scrollFrame.Size = UDim2.new(1, -10, 1, -42)
+    scrollFrame.Position = UDim2.new(0, 5, 0, 38)
+    scrollFrame.BackgroundTransparency = 1
+    scrollFrame.BorderSizePixel = 0
+    scrollFrame.ScrollBarThickness = 4
+    scrollFrame.ScrollBarImageColor3 = Color3.fromRGB(100, 100, 120)
+    scrollFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
+    scrollFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    scrollFrame.Visible = Config.statusExpanded
+    scrollFrame.Parent = statusFrame
+    
+    local statusLayout = Instance.new("UIListLayout")
+    statusLayout.FillDirection = Enum.FillDirection.Vertical
+    statusLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    statusLayout.Padding = UDim.new(0, 1)
+    statusLayout.Parent = scrollFrame
+    
+    local statusPadding = Instance.new("UIPadding")
+    statusPadding.PaddingLeft = UDim.new(0, 6)
+    statusPadding.PaddingRight = UDim.new(0, 10)
+    statusPadding.PaddingTop = UDim.new(0, 2)
+    statusPadding.PaddingBottom = UDim.new(0, 4)
+    statusPadding.Parent = scrollFrame
+    
+    -- Toggle expand/collapse for STATUS
+    statusExpandBtn.MouseButton1Click:Connect(function()
+        Config.statusExpanded = not Config.statusExpanded
+        statusExpandBtn.Text = Config.statusExpanded and "▲" or "▼"
+        statusFrame.Size = Config.statusExpanded and STATUS_EXPANDED_SIZE or STATUS_COLLAPSED_SIZE
+        scrollFrame.Visible = Config.statusExpanded
+        saveConfig()
+    end)
+    
+    -- Unload button for STATUS - destroys the entire ESP system
+    statusUnloadBtn.MouseButton1Click:Connect(function()
+        print("[IndexESP] 🚫 Unloading...")
+        ESP:Disable()
+        if self.ScreenGui then
+            self.ScreenGui:Destroy()
+            self.ScreenGui = nil
+        end
+        print("[IndexESP] ✅ Unloaded!")
+    end)
+    
+    self.StatusFrame = statusFrame
+    self.ScrollContent = scrollFrame
+    self.StatusTitle = statusTitle
+    
+    -- Make status frame draggable from title bar
+    local statusDragging, statusDragInput, statusDragStart, statusStartPos
+    
+    statusTitleBar.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            -- Bring to front
+            screenGui.DisplayOrder = 10000
+            statusDragging = true
+            statusDragStart = input.Position
+            statusStartPos = statusFrame.Position
+            
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    statusDragging = false
+                    screenGui.DisplayOrder = 999 -- Reset to normal
+                    -- Save position when drag ends
+                    Config.statusPosition = {
+                        scale = {x = statusFrame.Position.X.Scale, y = statusFrame.Position.Y.Scale},
+                        offset = {x = statusFrame.Position.X.Offset, y = statusFrame.Position.Y.Offset}
+                    }
+                    saveConfig()
+                end
+            end)
+        end
+    end)
+    
+    statusTitleBar.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+            statusDragInput = input
+        end
+    end)
+    
+    game:GetService("UserInputService").InputChanged:Connect(function(input)
+        if input == statusDragInput and statusDragging then
+            local delta = input.Position - statusDragStart
+            statusFrame.Position = UDim2.new(statusStartPos.X.Scale, statusStartPos.X.Offset + delta.X, statusStartPos.Y.Scale, statusStartPos.Y.Offset + delta.Y)
+        end
+    end)
+end
+
+-- Get the proper color for a mutation (uses game's color system)
+local function getMutationColor(mutationName)
+    -- Default/Normal is gray
+    if mutationName == "Default" then
+        return Color3.fromRGB(200, 200, 200)
+    end
+    
+    -- PRIORITY 1: MutationsData.MainColor (this is what the game displays)
+    if MutationsData[mutationName] and MutationsData[mutationName].MainColor then
+        return MutationsData[mutationName].MainColor
+    end
+    
+    -- PRIORITY 2: IndexData.MainColor (some special entries like Halloween, Aquatic)
+    if IndexData[mutationName] and IndexData[mutationName].MainColor then
+        return IndexData[mutationName].MainColor
+    end
+    
+    -- PRIORITY 3: RaritiesData (fallback)
+    if RaritiesData[mutationName] and RaritiesData[mutationName].MainColor then
+        return RaritiesData[mutationName].MainColor
+    end
+    
+    -- Fallback
+    return Color3.fromRGB(200, 200, 200)
+end
+
+-- Update the status box with all mutation progress
+function NotificationUI:UpdateStatus()
+    if not self.StatusFrame or not self.ScrollContent then return end
+    
+    -- Clear old entries from scroll content (frames and labels)
+    for _, child in ipairs(self.ScrollContent:GetChildren()) do
+        if child:IsA("TextLabel") or child:IsA("Frame") then
+            child:Destroy()
+        end
+    end
+    
+    -- Check if player data is loaded first
+    local playerData = nil
+    pcall(function()
+        playerData = Synchronizer:Get(LocalPlayer)
+    end)
+    
+    if not playerData then
+        -- Show loading state
+        local loadingLabel = Instance.new("TextLabel")
+        loadingLabel.Name = "LoadingLabel"
+        loadingLabel.AutomaticSize = Enum.AutomaticSize.XY
+        loadingLabel.Size = UDim2.new(0, 0, 0, 0)
+        loadingLabel.LayoutOrder = 1
+        loadingLabel.BackgroundTransparency = 1
+        loadingLabel.RichText = true
+        loadingLabel.Text = '<font color="#FFAA00">⏳ Loading player data...</font>'
+        loadingLabel.TextSize = 16
+        loadingLabel.Font = Enum.Font.GothamBold
+        loadingLabel.TextXAlignment = Enum.TextXAlignment.Right
+        loadingLabel.Parent = self.ScrollContent
+        return
+    end
+    
+    -- Collect ALL mutation data first, then sort
+    local mutationData = {}
+    local totalMutationsChecked = 0
+    
+    -- Add Default first
+    local defCollected, defNeeded, defTotal = 0, 0, 0
+    pcall(function()
+        defCollected, defNeeded, defTotal = SharedIndex:GetIndexAnimals(LocalPlayer, "Default")
+    end)
+    if (defNeeded and defNeeded > 0) or (defCollected and defCollected > 0) then
+        table.insert(mutationData, {
+            name = "Default",
+            collected = defCollected or 0,
+            needed = defNeeded or 0,
+            total = defTotal or 0,
+            remaining = math.max(0, (defNeeded or 0) - (defCollected or 0))
+        })
+        totalMutationsChecked = totalMutationsChecked + 1
+    end
+    
+    -- Get ALL entries from IndexData - check if it's a table with mutation-like properties
+    for mutationName, mutationInfo in pairs(IndexData) do
+        if type(mutationInfo) == "table" and mutationName ~= "Default" then
+            -- Include ANY entry that looks like a mutation category
+            -- Check for IsMutation, CustomIndex, LimitedMutation, or just has MainColor (mutation indicator)
+            local isMutationType = mutationInfo.IsMutation or mutationInfo.CustomIndex or mutationInfo.LimitedMutation or mutationInfo.MainColor
+            
+            if isMutationType then
+                local collected, needed, total = 0, 0, 0
+                pcall(function()
+                    collected, needed, total = SharedIndex:GetIndexAnimals(LocalPlayer, mutationName)
+                end)
+                
+                -- Show if there's data for this mutation
+                if (needed and needed > 0) or (collected and collected > 0) then
+                    table.insert(mutationData, {
+                        name = mutationName,
+                        collected = collected or 0,
+                        needed = needed or 0,
+                        total = total or 0,
+                        remaining = math.max(0, (needed or 0) - (collected or 0))
+                    })
+                    totalMutationsChecked = totalMutationsChecked + 1
+                end
+            end
+        end
+    end
+    
+    -- If no mutations found at all, data might still be loading
+    if totalMutationsChecked == 0 then
+        local loadingLabel = Instance.new("TextLabel")
+        loadingLabel.Name = "LoadingLabel"
+        loadingLabel.AutomaticSize = Enum.AutomaticSize.XY
+        loadingLabel.Size = UDim2.new(0, 0, 0, 0)
+        loadingLabel.LayoutOrder = 1
+        loadingLabel.BackgroundTransparency = 1
+        loadingLabel.RichText = true
+        loadingLabel.Text = '<font color="#FFAA00">⏳ Loading index data...</font>'
+        loadingLabel.TextSize = 16
+        loadingLabel.Font = Enum.Font.GothamBold
+        loadingLabel.TextXAlignment = Enum.TextXAlignment.Right
+        loadingLabel.Parent = self.ScrollContent
+        return
+    end
+    
+    -- SORT: Closest to completion at top, done at bottom
+    table.sort(mutationData, function(a, b)
+        local aDone = a.remaining <= 0
+        local bDone = b.remaining <= 0
+        
+        -- Done ones go to BOTTOM
+        if aDone and not bDone then return false end
+        if bDone and not aDone then return true end
+        
+        -- If both not done, sort by remaining (ascending = closest to completion first)
+        if not aDone and not bDone then
+            return a.remaining < b.remaining
+        end
+        
+        -- Both done - alphabetical
+        return a.name < b.name
+    end)
+    
+    local layoutOrder = 1
+    local hasAnyRemaining = false
+    local totalNeededForMilestones = 0  -- Track total animals needed across all mutations
+    local totalMissingAcrossAll = 0  -- Track total missing animals across all mutations for title
+    
+    for _, data in ipairs(mutationData) do
+        local mutation = data.name
+        local collected = data.collected
+        local needed = data.needed
+        local total = data.total or 0
+        local remaining = data.remaining
+        local totalMissing = math.max(0, total - collected) -- How many until 100%
+        totalMissingAcrossAll = totalMissingAcrossAll + totalMissing
+        
+        -- Get mutation info for display
+        local mutInfo = MutationsData[mutation] or IndexData[mutation]
+        
+        -- Create a row frame to hold mutation name + stats
+        local row = Instance.new("Frame")
+        row.Name = "Row_" .. mutation
+        row.Size = UDim2.new(1, 0, 0, 22)
+        row.LayoutOrder = layoutOrder
+        row.BackgroundTransparency = 1
+        row.Parent = self.ScrollContent
+        
+        -- Mutation name label with RichText support (like the game)
+        local nameLabel = Instance.new("TextLabel")
+        nameLabel.Name = "Name"
+        nameLabel.Size = UDim2.new(0, 120, 1, 0)
+        nameLabel.Position = UDim2.new(0, 0, 0, 0)
+        nameLabel.BackgroundTransparency = 1
+        nameLabel.TextColor3 = Color3.new(1, 1, 1)
+        nameLabel.TextSize = 17
+        nameLabel.Font = Enum.Font.GothamBold
+        nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+        nameLabel.Parent = row
+        
+        -- Apply text and color EXACTLY like the game does (IndexController.lua lines 280-291)
+        if mutation == "Default" then
+            nameLabel.Text = "Normal"
+            nameLabel.RichText = false
+            nameLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+        elseif mutInfo and mutInfo.UseRichText and mutInfo.DisplayWithRichText then
+            -- Use RichText display (YinYang, etc.)
+            nameLabel.Text = mutInfo.DisplayWithRichText
+            nameLabel.RichText = true
+        elseif mutInfo and mutInfo.DisplayWithRichText then
+            -- Use DisplayWithRichText for colored text (has <font color> tags)
+            nameLabel.Text = mutInfo.DisplayWithRichText
+            nameLabel.RichText = true
+        elseif mutInfo and mutInfo.DisplayText then
+            nameLabel.Text = mutInfo.DisplayText
+            nameLabel.RichText = false
+        else
+            nameLabel.Text = mutation
+            nameLabel.RichText = false
+        end
+        
+        -- Apply gradient if mutation has GradientPreset (like Rainbow, Christmas)
+        if mutation == "Rainbow" then
+            nameLabel.Text = "Rainbow"
+            nameLabel.RichText = false
+            nameLabel.TextColor3 = Color3.new(1, 1, 1) -- White for gradient
+            pcall(function()
+                Gradients.apply(nameLabel, "Rainbow")
+            end)
+        elseif mutation == "Christmas" then
+            nameLabel.Text = "Christmas"
+            nameLabel.RichText = false
+            nameLabel.TextColor3 = Color3.new(1, 1, 1) -- White for gradient
+            pcall(function()
+                Gradients.apply(nameLabel, "SlowGreenRed")
+            end)
+        elseif mutInfo and mutInfo.GradientPreset then
+            nameLabel.TextColor3 = Color3.new(1, 1, 1) -- White for gradient
+            pcall(function()
+                Gradients.apply(nameLabel, mutInfo.GradientPreset)
+            end)
+        elseif not nameLabel.RichText and mutInfo and mutInfo.MainColor then
+            -- Only set color if not using RichText (RichText has colors built in)
+            nameLabel.TextColor3 = mutInfo.MainColor
+        end
+        
+        -- Stats label (progress info)
+        local statsLabel = Instance.new("TextLabel")
+        statsLabel.Name = "Stats"
+        statsLabel.Size = UDim2.new(1, -125, 1, 0)
+        statsLabel.Position = UDim2.new(0, 125, 0, 0)
+        statsLabel.BackgroundTransparency = 1
+        statsLabel.RichText = true
+        statsLabel.TextSize = 14
+        statsLabel.Font = Enum.Font.GothamBold
+        statsLabel.TextXAlignment = Enum.TextXAlignment.Right
+        statsLabel.Parent = row
+        
+        if remaining > 0 then
+            -- Not at milestone yet - show how many left for milestone
+            local progressColor = remaining <= 3 and "#FFCC00" or "#FF8888"
+            statsLabel.Text = string.format('<font color="%s">%d left</font>', progressColor, remaining)
+            hasAnyRemaining = true
+            totalNeededForMilestones = totalNeededForMilestones + remaining
+        else
+            -- Milestone reached - show checkmark + how many left for full 100%
+            if totalMissing > 0 then
+                statsLabel.Text = string.format('<font color="#50C850">✓</font> <font color="#888888">(%d left)</font>', totalMissing)
+            else
+                statsLabel.Text = '<font color="#50C850">✓</font>'
+            end
+        end
+        
+        layoutOrder = layoutOrder + 1
+    end
+    
+    -- Update status frame border color based on completion
+    local statusStroke = self.StatusFrame:FindFirstChild("UIStroke")
+    if statusStroke then
+        if hasAnyRemaining then
+            statusStroke.Color = Color3.fromRGB(80, 80, 100)
+        else
+            statusStroke.Color = Color3.fromRGB(60, 140, 60)
+        end
+    end
+    
+    -- Update the title with total animals needed for milestones
+    if self.StatusTitle then
+        if totalNeededForMilestones > 0 then
+            self.StatusTitle.Text = "INDEX PROGRESS (" .. totalNeededForMilestones .. " left)"
+        else
+            self.StatusTitle.Text = "INDEX PROGRESS ✓"
+        end
+    end
+end
+
+-- Update the TO INDEX animal list with all animals that need indexing
+function NotificationUI:AdjustToIndexHeight()
+    -- Dynamically adjust TO INDEX HUD height based on content
+    if not self.ToIndexFrame or not self.ToIndexListLayout then return end
+    if not Config.toIndexExpanded then return end
+    
+    -- Get the content height from the UIListLayout
+    local contentHeight = self.ToIndexListLayout.AbsoluteContentSize.Y
+    
+    -- Calculate total height: title bar + content + padding
+    local totalHeight = self.TOINDEX_TITLE_HEIGHT + contentHeight + 10
+    
+    -- Use a smaller minimum when content is small (e.g., just "All indexed!" message)
+    local minContentNeeded = math.max(35, contentHeight + 5)  -- At least 35px or actual content
+    local minHeight = self.TOINDEX_TITLE_HEIGHT + minContentNeeded
+    local maxHeight = self.TOINDEX_MAX_HEIGHT
+    totalHeight = math.max(minHeight, math.min(totalHeight, maxHeight))
+    
+    -- Apply the dynamic size
+    self.ToIndexFrame.Size = UDim2.new(0, 280, 0, totalHeight)
+end
+
+function NotificationUI:UpdateAnimalList(animalsList)
+    if not self.AnimalListScroll then return end
+    
+    -- Clear old entries
+    for _, child in ipairs(self.AnimalListScroll:GetChildren()) do
+        if child:IsA("TextLabel") or child:IsA("Frame") then
+            child:Destroy()
+        end
+    end
+    
+    -- If no animals, show message
+    if not animalsList or #animalsList == 0 then
+        local emptyLabel = Instance.new("TextLabel")
+        emptyLabel.Name = "EmptyLabel"
+        emptyLabel.Size = UDim2.new(1, -10, 0, 30)
+        emptyLabel.BackgroundTransparency = 1
+        emptyLabel.RichText = true
+        emptyLabel.Text = '<font color="#50C850">✓All animals indexed!</font>'
+        emptyLabel.TextSize = 14
+        emptyLabel.Font = Enum.Font.GothamBold
+        emptyLabel.TextXAlignment = Enum.TextXAlignment.Center
+        emptyLabel.Parent = self.AnimalListScroll
+        
+        -- Directly set compact size for empty state (title bar + message + padding)
+        if self.ToIndexFrame and Config.toIndexExpanded then
+            self.ToIndexFrame.Size = UDim2.new(0, 280, 0, 80)
+        end
+        return
+    end
+    
+    -- Group animals by mutation for better organization
+    local byMutation = {}
+    for _, animal in ipairs(animalsList) do
+        local mut = animal.mutation or "Default"
+        if not byMutation[mut] then
+            byMutation[mut] = {}
+        end
+        table.insert(byMutation[mut], animal)
+    end
+    
+    -- Sort mutations (Default first, then alphabetically)
+    local sortedMutations = {}
+    for mutation in pairs(byMutation) do
+        table.insert(sortedMutations, mutation)
+    end
+    table.sort(sortedMutations, function(a, b)
+        if a == "Default" then return true end
+        if b == "Default" then return false end
+        return a < b
+    end)
+    
+    local layoutOrder = 1
+    
+    for _, mutation in ipairs(sortedMutations) do
+        local animals = byMutation[mutation]
+        local mutInfo = MutationsData[mutation] or IndexData[mutation]
+        
+        -- Get mutation color
+        local mutColor = getMutationColor(mutation)
+        local colorHex = string.format("#%02X%02X%02X", 
+            math.floor(mutColor.R * 255), 
+            math.floor(mutColor.G * 255), 
+            math.floor(mutColor.B * 255))
+        
+        -- Create mutation header
+        local header = Instance.new("TextLabel")
+        header.Name = "Header_" .. mutation
+        header.Size = UDim2.new(1, -10, 0, 22)
+        header.LayoutOrder = layoutOrder
+        header.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+        header.BackgroundTransparency = 0.5
+        header.RichText = true
+        header.TextSize = 13
+        header.Font = Enum.Font.GothamBold
+        header.TextXAlignment = Enum.TextXAlignment.Left
+        header.Parent = self.AnimalListScroll
+        
+        local headerCorner = Instance.new("UICorner")
+        headerCorner.CornerRadius = UDim.new(0, 4)
+        headerCorner.Parent = header
+        
+        local headerPadding = Instance.new("UIPadding")
+        headerPadding.PaddingLeft = UDim.new(0, 6)
+        headerPadding.Parent = header
+        
+        -- Format mutation name
+        local displayName = mutation
+        if mutation == "Default" then
+            displayName = "Normal"
+        elseif mutInfo and mutInfo.DisplayText then
+            displayName = mutInfo.DisplayText
+        end
+        
+        -- Apply text with color
+        if mutInfo and mutInfo.DisplayWithRichText then
+            header.Text = mutInfo.DisplayWithRichText .. string.format(' <font color="#888888">(%d)</font>', #animals)
+        else
+            header.Text = string.format('<font color="%s">%s</font> <font color="#888888">(%d)</font>', colorHex, displayName, #animals)
+        end
+        
+        layoutOrder = layoutOrder + 1
+        
+        -- Sort animals alphabetically within mutation
+        table.sort(animals, function(a, b)
+            return (a.displayName or a.name) < (b.displayName or b.name)
+        end)
+        
+        -- Add each animal
+        for _, animal in ipairs(animals) do
+            local animalRow = Instance.new("TextLabel")
+            animalRow.Name = "Animal_" .. (animal.name or "Unknown")
+            animalRow.Size = UDim2.new(1, -10, 0, 18)
+            animalRow.LayoutOrder = layoutOrder
+            animalRow.BackgroundTransparency = 1
+            animalRow.RichText = true
+            animalRow.TextSize = 12
+            animalRow.Font = Enum.Font.Gotham
+            animalRow.TextXAlignment = Enum.TextXAlignment.Left
+            animalRow.Parent = self.AnimalListScroll
+            
+            local animalPadding = Instance.new("UIPadding")
+            animalPadding.PaddingLeft = UDim.new(0, 16)
+            animalPadding.Parent = animalRow
+            
+            -- Get rarity color for the animal
+            local animalData = AnimalsData[animal.name]
+            local rarityColor = Color3.fromRGB(180, 180, 180)
+            if animalData and animalData.Rarity and RaritiesData[animalData.Rarity] then
+                rarityColor = RaritiesData[animalData.Rarity].MainColor or rarityColor
+            end
+            local rarityHex = string.format("#%02X%02X%02X", 
+                math.floor(rarityColor.R * 255), 
+                math.floor(rarityColor.G * 255), 
+                math.floor(rarityColor.B * 255))
+            
+            animalRow.Text = string.format('<font color="%s">• %s</font>', rarityHex, animal.displayName or animal.name)
+            
+            layoutOrder = layoutOrder + 1
+        end
+    end
+    
+    -- Adjust height dynamically after populating content
+    task.defer(function()
+        self:AdjustToIndexHeight()
+    end)
+end
+
+function NotificationUI:Update(total, byMutation, animalsList)
+    if not self.Label then return end
+    
+    local frame = self.ScreenGui and self.ScreenGui:FindFirstChild("NotifFrame")
+    local stroke = frame and frame:FindFirstChild("UIStroke")
+    
+    -- Check if player data is loaded first
+    local playerData = nil
+    pcall(function()
+        playerData = Synchronizer:Get(LocalPlayer)
+    end)
+    
+    if not playerData then
+        -- Show loading state
+        self.Label.Text = '<font color="#FFAA00">⏳</font>'
+        if stroke then
+            stroke.Color = Color3.fromRGB(180, 140, 60)
+        end
+        -- Still update status box (it has its own loading check)
+        self:UpdateStatus()
+        return
+    end
+    
+    if total == 0 then
+        self.Label.Text = '<font color="#50C850">✓</font>'
+        if stroke then
+            stroke.Color = Color3.fromRGB(60, 140, 60)
+        end
+    else
+        -- Just show the total count in the title bar
+        self.Label.Text = string.format('<font color="#FF8888">%d</font>', total)
+        
+        if stroke then
+            stroke.Color = Color3.fromRGB(140, 50, 50)
+        end
+    end
+    
+    -- Update the scrollable animal list
+    self:UpdateAnimalList(animalsList)
+    
+    -- Also update the status box
+    self:UpdateStatus()
+end
+
+-- Show spawn alert when a new animal that needs indexing appears
+function NotificationUI:ShowSpawnAlert(animalName, mutation)
+    if not self.ScreenGui then return end
+    
+    local frame = self.ScreenGui:FindFirstChild("NotifFrame")
+    if not frame then return end
+    
+    -- Create or get spawn alert label
+    local spawnLabel = frame:FindFirstChild("SpawnAlert")
+    if not spawnLabel then
+        spawnLabel = Instance.new("TextLabel")
+        spawnLabel.Name = "SpawnAlert"
+        spawnLabel.AutomaticSize = Enum.AutomaticSize.XY
+        spawnLabel.Size = UDim2.new(0, 0, 0, 0)
+        spawnLabel.LayoutOrder = 3
+        spawnLabel.BackgroundTransparency = 1
+        spawnLabel.RichText = true
+        spawnLabel.TextColor3 = Color3.fromRGB(255, 220, 80)
+        spawnLabel.TextSize = 16
+        spawnLabel.Font = Enum.Font.GothamBold
+        spawnLabel.TextXAlignment = Enum.TextXAlignment.Right
+        spawnLabel.Parent = frame
+    end
+    
+    -- Get mutation color for the spawn alert
+    local color = Color3.fromRGB(255, 220, 80)
+    if mutation and mutation ~= "Default" then
+        if IndexData[mutation] and IndexData[mutation].MainColor then
+            color = IndexData[mutation].MainColor
+        elseif MutationsData[mutation] and MutationsData[mutation].MainColor then
+            color = MutationsData[mutation].MainColor
+        end
+    end
+    local hex = string.format("#%02X%02X%02X", 
+        math.floor(color.R * 255), 
+        math.floor(color.G * 255), 
+        math.floor(color.B * 255))
+    
+    -- Update spawn alert text with colored mutation
+    local mutationText = ""
+    if mutation and mutation ~= "Default" then
+        mutationText = string.format(' <font color="%s">%s</font>', hex, mutation)
+    end
+    spawnLabel.Text = string.format('<font color="#FFE050">⚡</font> %s%s', animalName, mutationText)
+    spawnLabel.Visible = true
+    
+    -- Flash effect on the frame
+    task.spawn(function()
+        local stroke = frame:FindFirstChild("UIStroke")
+        if stroke then
+            -- Flash with mutation color then back to normal
+            for i = 1, 3 do
+                stroke.Color = color
+                stroke.Thickness = 2
+                stroke.Transparency = 0
+                task.wait(0.12)
+                stroke.Color = Color3.fromRGB(140, 50, 50)
+                stroke.Thickness = 1
+                stroke.Transparency = 0.3
+                task.wait(0.12)
+            end
+        end
+        
+        -- Hide spawn alert after 3 seconds
+        task.wait(2.5)
+        if spawnLabel and spawnLabel.Parent then
+            spawnLabel.Visible = false
+        end
+    end)
+end
+
+function NotificationUI:SetVisible(visible)
+    if self.ScreenGui then
+        self.ScreenGui.Enabled = visible
+    end
+    if self.StatusFrame then
+        self.StatusFrame.Visible = visible
+    end
+end
+
+function NotificationUI:Destroy()
+    if self.ScreenGui then
+        self.ScreenGui:Destroy()
+        self.ScreenGui = nil
+        self.StatusFrame = nil
+        self.Label = nil
+        self.AnimalListScroll = nil
+        self.ScrollContent = nil
+    end
+end
+
+function ESP:CreateHighlight(part)
+    local highlight = Instance.new("Highlight")
+    highlight.FillColor = Color3.fromRGB(0, 255, 0)
+    highlight.OutlineColor = Color3.fromRGB(255, 255, 255)
+    highlight.FillTransparency = 0.5
+    highlight.OutlineTransparency = 0
+    highlight.Parent = part
+    return highlight
+end
+
+-- Update the counter text on an existing ESP billboard
+function ESP:UpdateBillboardCounter(billboard, mutation)
+    if not billboard then return end
+    
+    local frame = billboard:FindFirstChild("Frame")
+    if not frame then return end
+    
+    local countLabel = frame:FindFirstChild("CountLabel")
+    if not countLabel then return end
+    
+    -- Get fresh remaining count
+    local remaining = AnimalIndexChecker:GetRemainingForMutation(mutation)
+    local remainingNum = tonumber(remaining) or 10
+    
+    -- If milestone is complete (0 remaining), hide the text entirely
+    if remainingNum <= 0 then
+        countLabel.Text = ""
+    elseif remainingNum <= 2 then
+        countLabel.Text = remaining .. " left"
+        countLabel.TextColor3 = Color3.fromRGB(100, 255, 100)
+    elseif remainingNum <= 5 then
+        countLabel.Text = remaining .. " left"
+        countLabel.TextColor3 = Color3.fromRGB(255, 200, 50)
+    else
+        countLabel.Text = remaining .. " left"
+        countLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
+    end
+end
+
+-- Update ALL existing ESP billboards with fresh counter values
+function ESP:UpdateAllBillboardCounters()
+    for _, descendant in ipairs(Workspace:GetDescendants()) do
+        if descendant.Name == "IndexESP" and descendant:IsA("BillboardGui") then
+            local frame = descendant:FindFirstChild("Frame")
+            if frame then
+                -- Use stored Mutation attribute (fast lookup)
+                local mutation = frame:GetAttribute("Mutation") or "Default"
+                ESP:UpdateBillboardCounter(descendant, mutation)
+            end
+        end
+    end
+end
+
+function ESP:CreateBillboardGui(attachment, animalName, mutation, remaining)
+    -- Check if ESP already exists
+    local existing = attachment:FindFirstChild("IndexESP")
+    if existing then
+        existing:Destroy()
+    end
+    
+    local billboard = Instance.new("BillboardGui")
+    billboard.Name = "IndexESP"
+    billboard.Adornee = attachment.Parent
+    billboard.Size = UDim2.new(0, 280, 0, 90) -- Larger size for better visibility
+    billboard.StudsOffset = Vector3.new(0, 3.5, 0)
+    billboard.AlwaysOnTop = true
+    billboard.Parent = attachment
+    
+    local frame = Instance.new("Frame")
+    frame.Name = "Frame"
+    frame.Size = UDim2.new(1, 0, 1, 0)
+    frame.BackgroundTransparency = 1
+    frame.BorderSizePixel = 0
+    frame.Parent = billboard
+    
+    -- Store mutation for easy lookup when updating counters
+    frame:SetAttribute("Mutation", mutation)
+    
+    -- Animal name label (simple white text with stroke)
+    local nameLabel = Instance.new("TextLabel")
+    nameLabel.Name = "AnimalName"
+    nameLabel.Size = UDim2.new(1, 0, 0.38, 0)
+    nameLabel.Position = UDim2.new(0, 0, 0, 0)
+    nameLabel.BackgroundTransparency = 1
+    nameLabel.Text = animalName
+    nameLabel.TextColor3 = Color3.new(1, 1, 1)
+    nameLabel.TextScaled = true
+    nameLabel.Font = Enum.Font.FredokaOne
+    nameLabel.Parent = frame
+    
+    local nameStroke = Instance.new("UIStroke")
+    nameStroke.Thickness = 2
+    nameStroke.Color = Color3.new(0, 0, 0)
+    nameStroke.Parent = nameLabel
+    
+    -- Mutation label (styled like the game with RichText)
+    local mutLabel = Instance.new("TextLabel")
+    mutLabel.Name = "MutationLabel"
+    mutLabel.Size = UDim2.new(1, 0, 0.32, 0)
+    mutLabel.Position = UDim2.new(0, 0, 0.38, 0)
+    mutLabel.BackgroundTransparency = 1
+    mutLabel.TextScaled = true
+    mutLabel.Font = Enum.Font.GothamBold
+    mutLabel.Parent = frame
+    
+    -- Get mutation info and apply styling like the game
+    local mutInfo = MutationsData[mutation] or IndexData[mutation]
+    
+    if mutation == "Default" then
+        mutLabel.Text = "Normal"
+        mutLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+        mutLabel.RichText = false
+    elseif mutation == "Rainbow" then
+        -- Rainbow - animated gradient
+        mutLabel.Text = "Rainbow"
+        mutLabel.TextColor3 = Color3.new(1, 1, 1)
+        mutLabel.RichText = false
+        pcall(function()
+            Gradients.apply(mutLabel, "Rainbow")
+        end)
+    elseif mutation == "Christmas" then
+        -- Christmas uses GreenRed gradient (red/green animated)
+        mutLabel.Text = "Christmas"
+        mutLabel.TextColor3 = Color3.new(1, 1, 1)
+        mutLabel.RichText = false
+        pcall(function()
+            Gradients.apply(mutLabel, "SlowGreenRed")
+        end)
+    elseif mutInfo and mutInfo.GradientPreset then
+        -- Has gradient preset - apply animated gradient
+        mutLabel.Text = mutInfo.DisplayText or mutation
+        mutLabel.TextColor3 = Color3.new(1, 1, 1)
+        mutLabel.RichText = false
+        pcall(function()
+            Gradients.apply(mutLabel, mutInfo.GradientPreset)
+        end)
+    elseif mutInfo and mutInfo.DisplayWithRichText then
+        -- Use DisplayWithRichText for proper styling (YinYang, colored text, etc.)
+        mutLabel.Text = mutInfo.DisplayWithRichText
+        mutLabel.RichText = true
+        mutLabel.TextColor3 = Color3.new(1, 1, 1)
+    elseif mutInfo and mutInfo.MainColor then
+        -- Fallback to MainColor
+        mutLabel.Text = mutInfo.DisplayText or mutation
+        mutLabel.TextColor3 = mutInfo.MainColor
+        mutLabel.RichText = false
+    else
+        mutLabel.Text = mutation
+        mutLabel.TextColor3 = Color3.new(1, 1, 1)
+        mutLabel.RichText = false
+    end
+    
+    local mutStroke = Instance.new("UIStroke")
+    mutStroke.Thickness = 1.5
+    mutStroke.Color = Color3.new(0, 0, 0)
+    mutStroke.Parent = mutLabel
+    
+    -- Remaining count label - color based on progress (green = close, red = far)
+    local countLabel = Instance.new("TextLabel")
+    countLabel.Name = "CountLabel"
+    countLabel.Size = UDim2.new(1, 0, 0.30, 0)
+    countLabel.Position = UDim2.new(0, 0, 0.70, 0)
+    countLabel.BackgroundTransparency = 1
+    countLabel.TextScaled = true
+    countLabel.Font = Enum.Font.GothamBold
+    countLabel.Parent = frame
+    
+    -- Color based on how close to completion (1-2 = green, 3-5 = yellow, 6+ = red)
+    local remainingNum = tonumber(remaining) or 10
+    if remainingNum <= 0 then
+        -- Milestone complete! Hide the text
+        countLabel.Text = ""
+    elseif remainingNum <= 2 then
+        -- Very close! Green
+        countLabel.Text = remaining .. " left"
+        countLabel.TextColor3 = Color3.fromRGB(100, 255, 100)
+    elseif remainingNum <= 5 then
+        -- Getting close - Yellow/Orange
+        countLabel.Text = remaining .. " left"
+        countLabel.TextColor3 = Color3.fromRGB(255, 200, 50)
+    else
+        -- Far from completion - Red
+        countLabel.Text = remaining .. " left"
+        countLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
+    end
+    
+    local countStroke = Instance.new("UIStroke")
+    countStroke.Thickness = 1.5
+    countStroke.Color = Color3.new(0, 0, 0)
+    countStroke.Parent = countLabel
+    
+    return billboard
+end
+
+function ESP:UpdateESP(overheadData)
+    local info = Scanner:GetAnimalInfo(overheadData)
+    
+    if not info.displayName and not info.internalName then return end
+    
+    -- SKIP non-stealable animals (in fuse machine, crafting, etc) - they're locked!
+    local status = overheadData.status
+    if status and status ~= "stealable" then
+        return
+    end
+    
+    -- Get internal name - for world animals it's already available, for podium animals we convert
+    local internalName = info.internalName or AnimalIndexChecker:GetInternalName(info.displayName)
+    if not internalName then 
+        -- Animal not found in database, skip
+        return
+    end
+    
+    -- Normalize mutation FIRST - we need it for the requirement check
+    local mutation = AnimalIndexChecker:NormalizeMutation(info.mutation)
+    
+    -- IMPORTANT: Check if animal is required for this mutation's index
+    -- This filters out:
+    -- 1. New animals (IsEnabled() = false) for mutations without specific lists
+    -- 2. Animals not in the mutation's required list (for Bloodrot, Candy, Lava, Galaxy, etc.)
+    if not AnimalIndexChecker:IsAnimalRequiredForMutation(internalName, mutation) then
+        -- Animal is not required for this mutation's index - skip entirely
+        return
+    end
+    
+    -- Check if ESP already exists on this model to prevent duplicates
+    local animalModel = overheadData.animalModel
+    if animalModel then
+        local existingESP = animalModel:FindFirstChild("IndexESP", true)
+        if existingESP then
+            -- ESP already exists, don't create another one
+            return
+        end
+    end
+    
+    -- FIRST: Clear any existing ESPs on this animal to prevent duplicates
+    ESP:ClearESP(overheadData)
+    
+    -- CHECK IF THIS SPECIFIC ANIMAL IS INDEXED FIRST - this is the real check!
+    local isIndexed = AnimalIndexChecker:IsAnimalIndexed(LocalPlayer, internalName, mutation)
+    
+    -- DEBUG: Only log Secret/Rainbow animals when debug mode is enabled
+    local animalData = AnimalsData[internalName]
+    if AnimalIndexChecker.DebugMode then
+        local isSecretOrRainbow = (animalData and animalData.Rarity == "Secret") or mutation == "Rainbow"
+        if isSecretOrRainbow then
+            print("========================================")
+            print("[ESP DEBUG] CHECKING:", info.displayName or internalName)
+            print("  Source:", overheadData.source)
+            print("  Internal Name:", internalName)
+            print("  Mutation:", mutation)
+            print("  Rarity:", animalData and animalData.Rarity or "Unknown")
+            print("  IsIndexed Result:", isIndexed)
+            
+            local mutInfo = IndexData[mutation]
+            if mutInfo then
+                local mutType = "Unknown"
+                if mutInfo.CustomIndex then
+                    mutType = "CustomIndex:" .. tostring(mutInfo.CustomIndex.Name)
+                elseif mutInfo.IsMutation then
+                    mutType = "IsMutation=true"
+                end
+                print("  MutationInfo:", mutType)
+            else
+                print("  MutationInfo: nil (will use mutation-based check since not in IndexData)")
+            end
+            
+            local playerData = Synchronizer:Get(LocalPlayer)
+            if playerData then
+                local fullIndexData = playerData:Get("Index")
+                if fullIndexData then
+                    local animalIndex = fullIndexData[internalName]
+                    if animalIndex then
+                        print("  Player Index[" .. internalName .. "]:", HttpService:JSONEncode(animalIndex))
+                        local mutValue = animalIndex[mutation]
+                        print("  Value at ['" .. mutation .. "']:", mutValue)
+                    else
+                        print("  Player Index[" .. internalName .. "]: nil (animal NOT in your index at all)")
+                    end
+                else
+                    print("  Player has no Index data!")
+                end
+            else
+                print("  No player data!")
+            end
+            print("========================================")
+        end
+    end
+    
+    -- Get remaining count for the ESP text (but don't use it to skip)
+    local remaining = AnimalIndexChecker:GetRemainingForMutation(mutation)
+    
+    local spawn = overheadData.spawn
+    if not spawn then return end
+    
+    -- If already indexed, clear any existing ESP and skip
+    if isIndexed then
+        -- Already cleared above, just return
+        return
+    end
+    
+    -- Get or create attachment for ESP - use consistent name to prevent duplicates
+    -- Priority: existing IndexESPAttachment > OVERHEAD_ATTACHMENT > create new
+    local animalModel = overheadData.animalModel
+    local attachment = nil
+    
+    if animalModel then
+        -- Check for our dedicated ESP attachment first (non-recursive for performance)
+        attachment = animalModel:FindFirstChild("IndexESPAttachment")
+        if not attachment then
+            -- Try Head (common structure)
+            local head = animalModel:FindFirstChild("Head")
+            if head then
+                attachment = head:FindFirstChild("IndexESPAttachment") or head:FindFirstChild("OVERHEAD_ATTACHMENT")
+            end
+        end
+        if not attachment then
+            -- Use OVERHEAD_ATTACHMENT if it exists
+            attachment = animalModel:FindFirstChild("OVERHEAD_ATTACHMENT")
+        end
+        if not attachment and spawn then
+            -- Create our own attachment on the spawn part
+            attachment = Instance.new("Attachment")
+            attachment.Name = "IndexESPAttachment"
+            attachment.Parent = spawn
+        end
+    elseif spawn then
+        attachment = spawn:FindFirstChild("IndexESPAttachment") or spawn:FindFirstChild("Attachment")
+        if not attachment then
+            attachment = Instance.new("Attachment")
+            attachment.Name = "IndexESPAttachment"
+            attachment.Parent = spawn
+        end
+    end
+    
+    if not attachment then return end
+    
+    -- Get mutation color from game modules
+    local mutationColor = Color3.fromRGB(255, 255, 255) -- Default white
+    if mutation ~= "Default" then
+        -- Check IndexData module first (mutation info with colors)
+        if IndexData[mutation] and IndexData[mutation].MainColor then
+            mutationColor = IndexData[mutation].MainColor
+        -- Then check MutationsData module
+        elseif MutationsData[mutation] and MutationsData[mutation].MainColor then
+            mutationColor = MutationsData[mutation].MainColor
+        end
+    end
+    
+    -- Build ESP text - clean and simple
+    local espText = ""
+    local highlightColor = Color3.fromRGB(255, 0, 0) -- Red for highlight
+    
+    -- Add animal name (use display name if available, otherwise internal name)
+    local displayName = info.displayName or internalName
+    
+    -- Create ESP with proper mutation styling
+    ESP:CreateBillboardGui(attachment, displayName, mutation, remaining)
+    
+    -- Add highlight to the spawn part (for world animals, highlight the whole model)
+    local highlightTarget = overheadData.animalModel or spawn
+    local existingHighlight = highlightTarget:FindFirstChild("IndexHighlight")
+    if existingHighlight then
+        existingHighlight.FillColor = Color3.fromRGB(255, 0, 0)
+    else
+        local highlight = ESP:CreateHighlight(highlightTarget)
+        highlight.Name = "IndexHighlight"
+        highlight.FillColor = Color3.fromRGB(255, 0, 0)
+    end
+end
+
+function ESP:ClearESP(overheadData)
+    local spawn = overheadData.spawn
+    local animalModel = overheadData.animalModel
+    
+    -- Clear ESP from all possible attachment locations
+    local attachmentsToCheck = {}
+    
+    if animalModel then
+        local espAttachment = animalModel:FindFirstChild("IndexESPAttachment", true)
+        if espAttachment then table.insert(attachmentsToCheck, espAttachment) end
+        
+        local overheadAttachment = animalModel:FindFirstChild("OVERHEAD_ATTACHMENT", true)
+        if overheadAttachment then table.insert(attachmentsToCheck, overheadAttachment) end
+    end
+    
+    if spawn then
+        local espAttachment = spawn:FindFirstChild("IndexESPAttachment")
+        if espAttachment then table.insert(attachmentsToCheck, espAttachment) end
+        
+        local attachment = spawn:FindFirstChild("Attachment")
+        if attachment then table.insert(attachmentsToCheck, attachment) end
+    end
+    
+    if overheadData.attachment then
+        table.insert(attachmentsToCheck, overheadData.attachment)
+    end
+    
+    -- Destroy IndexESP from all attachments
+    for _, attachment in ipairs(attachmentsToCheck) do
+        local esp = attachment:FindFirstChild("IndexESP")
+        if esp then
+            esp:Destroy()
+        end
+    end
+    
+    -- Clear highlight from spawn
+    if spawn then
+        local highlight = spawn:FindFirstChild("IndexHighlight")
+        if highlight then
+            highlight:Destroy()
+        end
+    end
+    
+    -- Clear highlight from animal model (for world animals)
+    if animalModel then
+        local highlight = animalModel:FindFirstChild("IndexHighlight")
+        if highlight then
+            highlight:Destroy()
+        end
+    end
+end
+
+function ESP:CalculateStats(overheads)
+    -- Reset stats
+    ESP.Stats = {
+        byRarity = {},
+        byMutation = {},
+        total = 0,
+        animals = {} -- List of animals that need indexing
+    }
+    
+    for _, overheadData in ipairs(overheads) do
+        local info = Scanner:GetAnimalInfo(overheadData)
+        if not info.displayName and not info.internalName then continue end
+        
+        local internalName = info.internalName or AnimalIndexChecker:GetInternalName(info.displayName)
+        if not internalName then continue end
+        
+        local mutation = AnimalIndexChecker:NormalizeMutation(info.mutation)
+        
+        -- Skip animals not required for this mutation's index
+        if not AnimalIndexChecker:IsAnimalRequiredForMutation(internalName, mutation) then continue end
+        
+        local isIndexed = AnimalIndexChecker:IsAnimalIndexed(LocalPlayer, internalName, mutation)
+        
+        if not isIndexed then
+            -- SKIP non-stealable animals entirely - they're not important!
+            local status = overheadData.status
+            if status and status ~= "stealable" then
+                continue
+            end
+            
+            ESP.Stats.total = ESP.Stats.total + 1
+            
+            -- Count by rarity
+            local rarity = info.rarity or "Unknown"
+            ESP.Stats.byRarity[rarity] = (ESP.Stats.byRarity[rarity] or 0) + 1
+            
+            -- Count by mutation
+            ESP.Stats.byMutation[mutation] = (ESP.Stats.byMutation[mutation] or 0) + 1
+            
+            -- Add to animals list for the TO INDEX HUD
+            table.insert(ESP.Stats.animals, {
+                name = internalName,
+                displayName = info.displayName or internalName,
+                mutation = mutation,
+                rarity = rarity,
+                model = overheadData.animalModel,  -- Include model for teleporting
+                source = overheadData.source  -- "World" or "Podium"
+            })
+        end
+    end
+end
+
+function ESP:PrintStats()
+    -- Silent - stats shown in UI instead
+    -- Use /espstats chat command if you want to see this
+end
+
+function ESP:RefreshAll()
+    local overheads = Scanner:FindAllAnimalOverheads()
+    
+    -- Calculate stats first
+    ESP:CalculateStats(overheads)
+    
+    -- Update notification UI with current stats and animals list
+    NotificationUI:Update(ESP.Stats.total, ESP.Stats.byMutation, ESP.Stats.animals)
+    
+    -- Update ALL existing billboard counters with fresh values
+    ESP:UpdateAllBillboardCounters()
+    
+    -- Then update ESPs with frame budget (process some each frame to avoid stutters)
+    local batchSize = 10
+    local index = 1
+    local total = #overheads
+    
+    while index <= total do
+        local endIndex = math.min(index + batchSize - 1, total)
+        for i = index, endIndex do
+            local overheadData = overheads[i]
+            if ESP.Enabled then
+                ESP:UpdateESP(overheadData)
+            else
+                ESP:ClearESP(overheadData)
+            end
+        end
+        index = endIndex + 1
+        if index <= total then
+            task.wait() -- Yield between batches to prevent freezing
+        end
+    end
+end
+
+-- Clear all ESPs for animals that are now indexed (runs after index change)
+function ESP:ClearIndexedAnimalESPs()
+    -- Search through workspace and destroy any IndexESP whose animal is now indexed
+    for _, descendant in ipairs(Workspace:GetDescendants()) do
+        if descendant.Name == "IndexESP" and descendant:IsA("BillboardGui") then
+            local frame = descendant:FindFirstChild("Frame")
+            if frame then
+                local nameLabel = frame:FindFirstChild("NameLabel")
+                local mutLabel = frame:FindFirstChild("MutationLabel")
+                if nameLabel and mutLabel then
+                    -- Extract animal name and mutation from ESP
+                    local displayName = nameLabel.Text:gsub("📖 ", "")
+                    local mutation = mutLabel.Text:gsub("✨ ", "")
+                    
+                    -- Convert display name to internal name
+                    local internalName = AnimalIndexChecker:GetInternalName(displayName)
+                    if internalName then
+                        local isIndexed = AnimalIndexChecker:IsAnimalIndexed(LocalPlayer, internalName, mutation)
+                        if isIndexed then
+                            -- This animal is now indexed - remove its ESP!
+                            pcall(function() descendant:Destroy() end)
+                            print("[IndexESP] 🗑️ Removed ESP for indexed animal:", displayName, mutation)
+                        end
+                    end
+                end
+            end
+        end
+    end
+end
+
+function ESP:Toggle()
+    ESP.Enabled = not ESP.Enabled
+    
+    -- Create notification UI if enabling, show/hide based on state
+    if ESP.Enabled then
+        NotificationUI:Create()
+        NotificationUI:SetVisible(true)
+    else
+        NotificationUI:SetVisible(false)
+    end
+    
+    ESP:RefreshAll()
+end
+
+-- Completely disable and clean up all ESP elements
+function ESP:Disable()
+    ESP.Enabled = false
+    
+    -- Clear ALL active ESPs in the world
+    -- Search for and destroy all IndexESP and IndexHighlight objects
+    for _, descendant in ipairs(Workspace:GetDescendants()) do
+        if descendant.Name == "IndexESP" or descendant.Name == "IndexHighlight" or descendant.Name == "IndexESPAttachment" then
+            pcall(function() descendant:Destroy() end)
+        end
+    end
+    
+    -- Clear any tracked ESPs
+    for key, _ in pairs(ESP.ActiveESPs) do
+        ESP.ActiveESPs[key] = nil
+    end
+    
+    -- Hide/destroy notification UI
+    if NotificationUI.ScreenGui then
+        pcall(function() NotificationUI.ScreenGui:Destroy() end)
+        NotificationUI.ScreenGui = nil
+    end
+    
+    print("[IndexESP] All ESPs cleared and disabled")
+end
+
+-- Enable ESP after game fully loads
+task.spawn(function()
+    -- Wait for PlayerGui to be ready
+    local playerGui = LocalPlayer:WaitForChild("PlayerGui", 30)
+    if not playerGui then return end
+    
+    -- Wait for player data to be available
+    local maxWait = 30
+    local waited = 0
+    while waited < maxWait do
+        local playerData = nil
+        pcall(function()
+            playerData = Synchronizer:Get(LocalPlayer)
+        end)
+        if playerData and playerData:Get("Index") then
+            break
+        end
+        task.wait(0.5)
+        waited = waited + 0.5
+    end
+    
+    -- Small extra delay for game to stabilize
+    task.wait(1)
+    
+    -- Now enable ESP
+    ESP:Toggle()
+end)
+
+-- Listen for index data changes via Synchronizer (FAST refresh for immediate feedback)
+local lastIndexChange = 0
+pcall(function()
+    local playerData = Synchronizer:Get(LocalPlayer)
+    if playerData then
+        -- Watch for changes to the Index data using OnChanged (correct method)
+        playerData:OnChanged("Index", function()
+            if ESP.Enabled then
+                local now = tick()
+                if now - lastIndexChange > 0.2 then -- Fast debounce: update quickly after indexing!
+                    lastIndexChange = now
+                    -- IMMEDIATELY clear any ESPs for newly indexed animals
+                    ESP:ClearIndexedAnimalESPs()
+                    task.delay(0.1, function()
+                        ESP:RefreshAll()
+                    end)
+                end
+            end
+        end, false) -- false = don't fire immediately, we init separately
+    end
+end)
+
+-- ============================================================================
+-- LOCAL PLAYER PLOT WATCHER - Detects when YOU place/steal animals
+-- ============================================================================
+local function watchLocalPlayerPlot()
+    local plots = Workspace:FindFirstChild("Plots")
+    if not plots then return end
+    
+    for _, plot in ipairs(plots:GetChildren()) do
+        if Scanner:IsLocalPlayerPlot(plot) then
+            print("[IndexESP] 👤 Found local player plot, watching for index changes...")
+            
+            -- Watch Synchronizer channel for AnimalList changes on MY plot
+            local channel = nil
+            pcall(function()
+                channel = Synchronizer:Wait(plot.Name)
+            end)
+            
+            if channel then
+                pcall(function()
+                    channel:OnChanged("AnimalList", function()
+                        if ESP.Enabled then
+                            -- When animal placed on MY plot = indexed! Refresh immediately
+                            task.delay(0.1, function()
+                                print("[IndexESP] 🔄 Local plot AnimalList changed - refreshing!")
+                                ESP:RefreshAll()
+                            end)
+                        end
+                    end, false)
+                end)
+            end
+            
+            -- Also watch for descendant additions (models being added)
+            plot.DescendantAdded:Connect(function(desc)
+                if ESP.Enabled and desc:IsA("Model") and desc:GetAttribute("Index") then
+                    task.delay(0.2, function()
+                        ESP:RefreshAll()
+                    end)
+                end
+            end)
+            
+            break
+        end
+    end
+end
+
+-- Run plot watcher
+task.spawn(function()
+    task.wait(2) -- Wait for plots to load
+    watchLocalPlayerPlot()
+end)
+
+-- Watch for players leaving (their plots/animals disappear)
+Players.PlayerRemoving:Connect(function(player)
+    if ESP.Enabled then
+        -- Delay to let the game clean up their plot/animals first
+        task.delay(0.5, function()
+            ESP:RefreshAll()
+        end)
+    end
+end)
+
+-- ============================================================================
+-- PLOT OBSERVER - Uses the SAME pattern as the game (Synchronizer channels)
+-- The game uses Channel:OnChanged("AnimalList", ...) to detect animal changes
+-- ============================================================================
+
+-- Track watched plots to avoid duplicate watchers
+local watchedPlots = {}
+
+-- Function to watch a plot for animal changes using Synchronizer
+local function watchPlot(plot)
+    local plotUID = plot.Name
+    
+    -- Avoid duplicate watchers
+    if watchedPlots[plotUID] then
+        return
+    end
+    watchedPlots[plotUID] = true
+    
+    -- Wait for plot to be loaded (same as game does) with timeout
+    task.spawn(function()
+        local timeout = 30
+        local waited = 0
+        while not plot:GetAttribute("Loaded") and waited < timeout do
+            task.wait(0.1)
+            waited = waited + 0.1
+        end
+        
+        if not plot:GetAttribute("Loaded") then
+            watchedPlots[plotUID] = nil -- Allow retry later
+            return
+        end
+        
+        -- Get the Synchronizer channel for this plot (same as game: v5:Wait(v187.UID))
+        local channel = nil
+        pcall(function()
+            channel = Synchronizer:Wait(plotUID)
+        end)
+        
+        if channel then
+            -- Watch for AnimalList changes (EXACTLY like game does)
+            pcall(function()
+                channel:OnChanged("AnimalList", function()
+                    if ESP.Enabled then
+                        task.delay(0.1, function()
+                            ESP:RefreshAll()
+                        end)
+                    end
+                end, true) -- true = fire immediately
+            end)
+        end
+        
+        -- Refresh immediately when plot loads
+        if ESP.Enabled then
+            ESP:RefreshAll()
+        end
+        
+        -- Fallback: Watch for any descendant additions (animals, overheads, etc)
+        plot.DescendantAdded:Connect(function(desc)
+            if ESP.Enabled then
+                -- Check if this is an animal model with Index attribute
+                if desc:IsA("Model") and desc:GetAttribute("Index") then
+                    task.delay(0.3, function()
+                        local internalName = desc:GetAttribute("Index")
+                        local mutation = AnimalIndexChecker:NormalizeMutation(desc:GetAttribute("Mutation"))
+                        
+                        -- Skip animals not required for this mutation's index
+                        if internalName and not AnimalIndexChecker:IsAnimalRequiredForMutation(internalName, mutation) then
+                            return
+                        end
+                        
+                        if internalName then
+                            local isIndexed = AnimalIndexChecker:IsAnimalIndexed(LocalPlayer, internalName, mutation)
+                            
+                            if not isIndexed then
+                                local displayName = internalName
+                                if AnimalsData[internalName] and AnimalsData[internalName].DisplayName then
+                                    displayName = AnimalsData[internalName].DisplayName
+                                end
+                                
+                                NotificationUI:ShowSpawnAlert(displayName, mutation)
+                            end
+                        end
+                        
+                        ESP:RefreshAll()
+                    end)
+                elseif desc.Name == "AnimalOverhead" or desc.Name == "Spawn" then
+                    task.delay(0.2, function()
+                        ESP:RefreshAll()
+                    end)
+                end
+            end
+        end)
+        
+        -- Also watch for attribute changes (like DeferDisplay being cleared)
+        plot.AttributeChanged:Connect(function()
+            if ESP.Enabled then
+                task.delay(0.2, function()
+                    ESP:RefreshAll()
+                end)
+            end
+        end)
+    end)
+end
+
+-- Use Observers to watch for Plot tags (SAME as game)
+pcall(function()
+    Observers.observeTag("Plot", function(plot)
+        watchPlot(plot)
+        
+        -- Return cleanup function
+        return function()
+            watchedPlots[plot.Name] = nil -- Clear from tracking
+            if ESP.Enabled then
+                ESP:RefreshAll()
+            end
+        end
+    end)
+end)
+
+-- ALSO watch via CollectionService directly as backup
+for _, plot in ipairs(CollectionService:GetTagged("Plot")) do
+    watchPlot(plot)
+end
+
+CollectionService:GetInstanceAddedSignal("Plot"):Connect(function(plot)
+    watchPlot(plot)
+end)
+
+-- Watch RenderedMovingAnimals for world animals
+local function watchRenderedAnimals(container)
+    container.ChildAdded:Connect(function(animalModel)
+        if ESP.Enabled then
+            task.delay(0.2, function()
+                -- Check if this animal needs to be indexed
+                local internalName = animalModel:GetAttribute("Index")
+                local mutation = AnimalIndexChecker:NormalizeMutation(animalModel:GetAttribute("Mutation"))
+                
+                -- Skip animals not required for this mutation's index
+                if internalName and not AnimalIndexChecker:IsAnimalRequiredForMutation(internalName, mutation) then
+                    return
+                end
+                
+                if internalName then
+                    local isIndexed = AnimalIndexChecker:IsAnimalIndexed(LocalPlayer, internalName, mutation)
+                    
+                    if not isIndexed then
+                        -- Get display name for the alert
+                        local displayName = internalName
+                        if AnimalsData[internalName] and AnimalsData[internalName].DisplayName then
+                            displayName = AnimalsData[internalName].DisplayName
+                        end
+                        
+                        -- Show spawn alert!
+                        NotificationUI:ShowSpawnAlert(displayName, mutation)
+                    end
+                end
+                
+                ESP:RefreshAll()
+            end)
+        end
+    end)
+    
+    container.ChildRemoved:Connect(function(animalModel)
+        if ESP.Enabled then
+            task.delay(0.1, function()
+                ESP:RefreshAll()
+            end)
+        end
+    end)
+end
+
+local renderedAnimals = Workspace:FindFirstChild("RenderedMovingAnimals")
+if renderedAnimals then
+    watchRenderedAnimals(renderedAnimals)
+else
+    -- Watch for RenderedMovingAnimals to be created
+    Workspace.ChildAdded:Connect(function(child)
+        if child.Name == "RenderedMovingAnimals" then
+            watchRenderedAnimals(child)
+        end
+    end)
+end
+
+-- CONTINUOUS refresh - throttled for performance (backup only, events are primary)
+local espLastUpdate = 0
+local ESP_UPDATE_INTERVAL = 5.0  -- 5 seconds since we have event hooks now
+local isRefreshing = false
+
+-- Use a slower loop instead of Heartbeat to reduce overhead
+task.spawn(function()
+    while true do
+        task.wait(1) -- Check every second, but only refresh at interval
+        if ESP.Enabled and not isRefreshing then
+            local now = tick()
+            if now - espLastUpdate > ESP_UPDATE_INTERVAL then
+                espLastUpdate = now
+                isRefreshing = true
+                ESP:RefreshAll()
+                isRefreshing = false
+            end
+        end
+    end
+end)
+
+-- ============================================================================
+-- HOOK INTO GAME'S AnimalController FOR INSTANT DETECTION
+-- This is the SAME system the game uses - way more efficient than scanning!
+-- ============================================================================
+
+-- Track ESP instances by animal UID for quick removal
+local animalESPByUID = {}
+
+-- When a NEW animal spawns anywhere in the world
+AnimalController.OnAnimalSpawn:Connect(function(animalClient)
+    if not ESP.Enabled then return end
+    
+    local internalName = animalClient.Index
+    local mutation = AnimalIndexChecker:NormalizeMutation(animalClient.Mutation)
+    local uid = animalClient.UID
+    
+    if not internalName then return end
+    
+    -- Skip animals not required for this mutation's index
+    if not AnimalIndexChecker:IsAnimalRequiredForMutation(internalName, mutation) then return end
+    
+    -- Check if we need to index this
+    local isIndexed = AnimalIndexChecker:IsAnimalIndexed(LocalPlayer, internalName, mutation)
+    
+    if not isIndexed then
+        -- Get display name for alert
+        local displayName = internalName
+        if AnimalsData[internalName] and AnimalsData[internalName].DisplayName then
+            displayName = AnimalsData[internalName].DisplayName
+        end
+        
+        -- Show spawn alert instantly!
+        NotificationUI:ShowSpawnAlert(displayName, mutation)
+        
+        -- Create ESP for this animal
+        local overheadData = {
+            animalModel = animalClient.AnimalModel or animalClient.Instance,
+            internalName = internalName,
+            mutation = mutation,
+            source = "World"
+        }
+        
+        -- Find the overhead
+        if animalClient.Instance then
+            local attachment = animalClient.Instance:FindFirstChild("OVERHEAD_ATTACHMENT", true)
+            if attachment then
+                overheadData.overhead = attachment:FindFirstChild("AnimalOverhead")
+            end
+            overheadData.spawn = animalClient.Instance.PrimaryPart
+        end
+        
+        ESP:UpdateESP(overheadData)
+        animalESPByUID[uid] = overheadData
+    end
+    
+    -- Update stats
+    ESP:RefreshAll()
+end)
+
+-- When an animal despawns - remove its ESP instantly
+AnimalController.OnAnimalDestroyed:Connect(function(uid)
+    if animalESPByUID[uid] then
+        ESP:ClearESP(animalESPByUID[uid])
+        animalESPByUID[uid] = nil
+    end
+    
+    -- Update stats
+    if ESP.Enabled then
+        task.defer(function()
+            ESP:RefreshAll()
+        end)
+    end
+end)
+
+-- Get ALL currently loaded animals from AnimalController on startup
+task.defer(function()
+    local allAnimals = AnimalController:GetAnimals()
+    if allAnimals then
+        for uid, animalClient in pairs(allAnimals) do
+            if ESP.Enabled then
+                local internalName = animalClient.Index
+                local mutation = AnimalIndexChecker:NormalizeMutation(animalClient.Mutation)
+                
+                -- Skip animals not required for this mutation's index
+                if internalName and not AnimalIndexChecker:IsAnimalRequiredForMutation(internalName, mutation) then
+                    continue
+                end
+                
+                if internalName then
+                    local isIndexed = AnimalIndexChecker:IsAnimalIndexed(LocalPlayer, internalName, mutation)
+                    
+                    if not isIndexed then
+                        local overheadData = {
+                            animalModel = animalClient.AnimalModel or animalClient.Instance,
+                            internalName = internalName,
+                            mutation = mutation,
+                            source = "World"
+                        }
+                        
+                        if animalClient.Instance then
+                            local attachment = animalClient.Instance:FindFirstChild("OVERHEAD_ATTACHMENT", true)
+                            if attachment then
+                                overheadData.overhead = attachment:FindFirstChild("AnimalOverhead")
+                            end
+                            overheadData.spawn = animalClient.Instance.PrimaryPart
+                        end
+                        
+                        ESP:UpdateESP(overheadData)
+                        animalESPByUID[uid] = overheadData
+                    end
+                end
+            end
+        end
+    end
+end)
+
+-- print("[ESP] Hooked into AnimalController - INSTANT animal detection enabled!")
+
+-- ============================================================================
+-- DEBUG COMMANDS - Type in chat to control debug mode
+-- ============================================================================
+local function onChatMessage(msg)
+    local lowerMsg = msg:lower()
+    if lowerMsg == "/espdebug" then
+        AnimalIndexChecker.DebugMode = not AnimalIndexChecker.DebugMode
+        print("[ESP] Debug mode:", AnimalIndexChecker.DebugMode and "ON" or "OFF")
+        if AnimalIndexChecker.DebugMode then
+            print("[ESP] Next index check will print detailed info")
+            -- Force a refresh to see debug output
+            ESP:RefreshAll()
+        end
+    elseif lowerMsg == "/espcheck" then
+        -- Manual check - print all current animals and their index status
+        print("\n=== MANUAL ESP CHECK ===")
+        local overheads = Scanner:FindAllAnimalOverheads()
+        for i, overheadData in ipairs(overheads) do
+            local info = Scanner:GetAnimalInfo(overheadData)
+            local internalName = info.internalName or AnimalIndexChecker:GetInternalName(info.displayName)
+            local mutation = AnimalIndexChecker:NormalizeMutation(info.mutation)
+            
+            if internalName then
+                -- Enable debug for this check
+                local oldDebug = AnimalIndexChecker.DebugMode
+                AnimalIndexChecker.DebugMode = true
+                local isIndexed = AnimalIndexChecker:IsAnimalIndexed(LocalPlayer, internalName, mutation)
+                AnimalIndexChecker.DebugMode = oldDebug
+                
+                print(string.format("[%d] %s (%s) - %s - Indexed: %s", 
+                    i, info.displayName or internalName, mutation, info.rarity or "?", tostring(isIndexed)))
+            end
+        end
+        print("=== END CHECK ===\n")
+    end
+end
+
+-- Hook to player chat
+LocalPlayer.Chatted:Connect(onChatMessage)
+-- print("[ESP] Debug commands: /espdebug (toggle debug), /espcheck (check all animals)")
+
+-- ============================================================================
+-- GLOBAL API FOR OTHER SCRIPTS (like Joiner auto-hop)
+-- ============================================================================
+_G.IndexESP = {
+    -- Get count of animals that need indexing in current server
+    GetToIndexCount = function()
+        return ESP.Stats and ESP.Stats.total or 0
+    end,
+    -- Get list of animals that need indexing
+    GetToIndexAnimals = function()
+        return ESP.Stats and ESP.Stats.animals or {}
+    end,
+    -- Check if ESP is enabled
+    IsEnabled = function()
+        return ESP.Enabled
+    end,
+    -- Force refresh
+    Refresh = function()
+        if ESP.Enabled then
+            ESP:RefreshAll()
+        end
+    end
+}
+print("[IndexESP] Global API exposed: _G.IndexESP.GetToIndexCount(), _G.IndexESP.GetToIndexAnimals()")
+
+-- Return modules for external use
+return {
+    Scanner = Scanner,
+    ESP = ESP,
+    AnimalIndexChecker = AnimalIndexChecker
+}
+
