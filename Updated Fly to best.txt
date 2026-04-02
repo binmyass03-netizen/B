@@ -227,3 +227,112 @@ btn.MouseButton1Click:Connect(handleToggle)
 UserInputService.InputBegan:Connect(function(i, g) if not g and i.KeyCode == Enum.KeyCode.V then handleToggle() end end)
 Workspace.Plots.ChildAdded:Connect(setupPlotListener)
 for _, p in pairs(Workspace.Plots:GetChildren()) do setupPlotListener(p) end
+------------------------------------------------------------------------------auto clone----------------------------------------
+local Players = game:GetService("Players")
+local UIS = game:GetService("UserInputService")
+local VIM = game:GetService("VirtualInputManager") -- Critical for hardware-level clicks
+
+local player = Players.LocalPlayer
+
+-- 1. Setup Draggable UI
+local sg = Instance.new("ScreenGui")
+sg.Name = "QuantumFix_V4"
+sg.ResetOnSpawn = false
+pcall(function() sg.Parent = (gethui and gethui()) or game:GetService("CoreGui") end)
+
+local Main = Instance.new("Frame")
+Main.Size = UDim2.new(0, 160, 0, 80)
+Main.Position = UDim2.new(0.5, -80, 0.2, 0)
+Main.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+Main.Active = true
+Main.Draggable = true 
+Main.Parent = sg
+Instance.new("UICorner", Main).CornerRadius = UDim.new(0, 10)
+
+local Btn = Instance.new("TextButton")
+Btn.Size = UDim2.new(0, 140, 0, 60)
+Btn.Position = UDim2.new(0.5, -70, 0.5, -30)
+Btn.Text = "CLONE"
+Btn.Font = Enum.Font.LuckiestGuy
+Btn.TextSize = 25
+Btn.TextColor3 = Color3.new(1, 1, 1)
+Btn.BackgroundColor3 = Color3.fromRGB(0, 120, 255)
+Btn.Parent = Main
+Instance.new("UICorner", Btn).CornerRadius = UDim.new(0, 8)
+
+-- ==========================================
+-- LOGIC A: FORCE TOOL USE (Screen Click)
+-- ==========================================
+local function ForceUseTool()
+    local viewport = workspace.CurrentCamera.ViewportSize
+    local x, y = viewport.X * 0.5, viewport.Y * 0.5 -- Middle of screen
+    
+    for i = 1, 3 do
+        VIM:SendMouseButtonEvent(x, y, 0, true, game, 1)
+        task.wait(0.02)
+        VIM:SendMouseButtonEvent(x, y, 0, false, game, 1)
+        task.wait(0.05)
+    end
+end
+
+-- ==========================================
+-- LOGIC B: UI SCANNER (Change With Clone)
+-- ==========================================
+local function clickCloneUI()
+    local targetText = "Change With Clone"
+    
+    -- Scan for the UI up to 100 times (approx 5 seconds)
+    for i = 1, 100 do 
+        -- We scan PlayerGui because that's where the "Change With Clone" button clones to
+        for _, v in pairs(player:WaitForChild("PlayerGui"):GetDescendants()) do
+            if (v:IsA("TextLabel") or v:IsA("TextButton")) and v.Text:find(targetText) then
+                local btn = v:IsA("GuiButton") and v or v:FindFirstAncestorOfClass("TextButton") or v:FindFirstAncestorOfClass("ImageButton")
+                
+                if btn and btn.Visible then
+                    task.wait(0.1) -- Wait for UI animation
+                    local p, s = btn.AbsolutePosition, btn.AbsoluteSize
+                    
+                    -- Click exactly in the middle of the button
+                    -- Note: The +58 offset is often needed for mobile executors to account for the top bar
+                    VIM:SendMouseButtonEvent(p.X + (s.X/2), p.Y + (s.Y/2) + 58, 0, true, game, 0)
+                    task.wait(0.05)
+                    VIM:SendMouseButtonEvent(p.X + (s.X/2), p.Y + (s.Y/2) + 58, 0, false, game, 0)
+                    
+                    print("Clicked Change With Clone UI!")
+                    return true
+                end
+            end
+        end
+        task.wait(0.05)
+    end
+    warn("UI Button 'Change With Clone' not found.")
+    return false
+end
+
+-- =========================
+-- MAIN BUTTON EVENT
+-- =========================
+Btn.MouseButton1Click:Connect(function()
+    local char = player.Character
+    if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    local backpack = player:FindFirstChild("Backpack")
+
+    -- 1. Equip the Quantum Cloner
+    local cloner = (backpack and backpack:FindFirstChild("Quantum Cloner")) or char:FindFirstChild("Quantum Cloner")
+    
+    if cloner then
+        hum:EquipTool(cloner)
+        task.wait(0.3) -- Essential wait for equip animation
+        
+        -- 2. Activate the tool (This spawns the UI in the game)
+        ForceUseTool()
+        
+        -- 3. Find and Click the "Change With Clone" button
+        task.spawn(function()
+            clickCloneUI()
+        end)
+    else
+        print("Error: Quantum Cloner not found in Backpack or Hand.")
+    end
+end)
