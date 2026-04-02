@@ -1,0 +1,163 @@
+local Players = game:GetService("Players")
+local TextChatService = game:GetService("TextChatService")
+local RunService = game:GetService("RunService")
+
+-- Configuration
+local COLORS = {
+    Background = Color3.fromRGB(10, 10, 10),
+    Surface = Color3.fromRGB(20, 20, 20),
+    Accent = Color3.fromRGB(138, 43, 226),
+    Text = Color3.fromRGB(255, 255, 255)
+}
+
+-- UI Setup
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "azekeAPUI"
+screenGui.ResetOnSpawn = false
+screenGui.Parent = Players.LocalPlayer:WaitForChild("PlayerGui")
+
+local mainFrame = Instance.new("Frame")
+mainFrame.Name = "MainFrame"
+mainFrame.Size = UDim2.new(0, 160, 0, 280)
+mainFrame.Position = UDim2.new(0.8, 0, 0.5, -140)
+mainFrame.BackgroundColor3 = COLORS.Background
+mainFrame.BorderSizePixel = 0
+mainFrame.Parent = screenGui
+
+local mainCorner = Instance.new("UICorner")
+mainCorner.CornerRadius = UDim.new(0, 6)
+mainCorner.Parent = mainFrame
+
+local stroke = Instance.new("UIStroke")
+stroke.Color = COLORS.Accent
+stroke.Thickness = 1.5
+stroke.Parent = mainFrame
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, 0, 0, 30)
+title.BackgroundTransparency = 1
+title.Text = "azeke ap spam"
+title.TextColor3 = COLORS.Accent
+title.Font = Enum.Font.GothamBold
+title.TextSize = 12
+title.Parent = mainFrame
+
+-- Spam All Button
+local spamAllBtn = Instance.new("TextButton")
+spamAllBtn.Name = "SpamAllBtn"
+spamAllBtn.Size = UDim2.new(1, -10, 0, 30)
+spamAllBtn.Position = UDim2.new(0, 5, 0, 35)
+spamAllBtn.BackgroundColor3 = COLORS.Accent
+spamAllBtn.Text = "SPAM ALL"
+spamAllBtn.TextColor3 = COLORS.Text
+spamAllBtn.Font = Enum.Font.GothamBold
+spamAllBtn.TextSize = 11
+spamAllBtn.Parent = mainFrame
+
+local spamCorner = Instance.new("UICorner")
+spamCorner.CornerRadius = UDim.new(0, 4)
+spamCorner.Parent = spamAllBtn
+
+local scroll = Instance.new("ScrollingFrame")
+scroll.Size = UDim2.new(1, -10, 1, -85)
+scroll.Position = UDim2.new(0, 5, 0, 75)
+scroll.BackgroundTransparency = 1
+scroll.BorderSizePixel = 0
+scroll.ScrollBarThickness = 2
+scroll.ScrollBarImageColor3 = COLORS.Accent
+scroll.Parent = mainFrame
+
+local layout = Instance.new("UIListLayout")
+layout.Padding = UDim.new(0, 4)
+layout.Parent = scroll
+
+-- Chat Logic
+local function sendCommand(msg)
+    local channel = TextChatService.TextChannels:FindFirstChild("RBXGeneral")
+    if channel then
+        channel:SendAsync(msg)
+    else
+        local events = game:GetService("ReplicatedStorage"):FindFirstChild("DefaultChatSystemChatEvents")
+        if events and events:FindFirstChild("SayMessageRequest") then
+            events.SayMessageRequest:FireServer(msg, "All")
+        end
+    end
+end
+
+-- Full Command Sequence
+local function runSequence(targetName)
+    local cmds = {
+        ";rocket ", ";tiny ", ";ragdoll ", ";balloon ", 
+        ";jumpscare ", ";morph ", ";inverse ", ";blind "
+    }
+    
+    for _, cmd in ipairs(cmds) do
+        sendCommand(cmd .. targetName)
+        task.wait(0.15) -- Slightly higher delay to ensure commands register
+    end
+end
+
+-- Spam All Logic
+spamAllBtn.MouseButton1Click:Connect(function()
+    for _, player in pairs(Players:GetPlayers()) do
+        if player ~= Players.LocalPlayer then
+            task.spawn(function()
+                runSequence(player.Name)
+            end)
+            task.wait(0.8) -- Delay between players to avoid chat flooding blocks
+        end
+    end
+end)
+
+-- Update Player List
+local function updateList()
+    for _, child in pairs(scroll:GetChildren()) do
+        if child:IsA("TextButton") then child:Destroy() end
+    end
+
+    for _, player in pairs(Players:GetPlayers()) do
+        if player == Players.LocalPlayer then continue end
+
+        local pBtn = Instance.new("TextButton")
+        pBtn.Size = UDim2.new(1, -5, 0, 25)
+        pBtn.BackgroundColor3 = COLORS.Surface
+        pBtn.Text = player.Name
+        pBtn.TextColor3 = COLORS.Text
+        pBtn.Font = Enum.Font.Gotham
+        pBtn.TextSize = 10
+        pBtn.Parent = scroll
+        
+        local pCorner = Instance.new("UICorner")
+        pCorner.CornerRadius = UDim.new(0, 4)
+        pCorner.Parent = pBtn
+
+        pBtn.MouseButton1Click:Connect(function()
+            runSequence(player.Name)
+        end)
+    end
+end
+
+Players.PlayerAdded:Connect(updateList)
+Players.PlayerRemoving:Connect(updateList)
+updateList()
+
+-- Draggable Logic
+local dragging, dragStart, startPos
+mainFrame.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        dragging = true
+        dragStart = input.Position
+        startPos = mainFrame.Position
+    end
+end)
+
+game:GetService("UserInputService").InputChanged:Connect(function(input)
+    if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+        local delta = input.Position - dragStart
+        mainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+    end
+end)
+
+game:GetService("UserInputService").InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end
+end)
