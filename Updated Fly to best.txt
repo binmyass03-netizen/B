@@ -1,0 +1,229 @@
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
+local CoreGui = game:GetService("CoreGui")
+
+local Packages = ReplicatedStorage:WaitForChild("Packages")
+local Datas = ReplicatedStorage:WaitForChild("Datas")
+local Utils = ReplicatedStorage:WaitForChild("Utils")
+
+local Synchronizer = require(Packages:WaitForChild("Synchronizer"))
+local AnimalsData = require(Datas:WaitForChild("Animals"))
+local NumberUtils = require(Utils:WaitForChild("NumberUtils"))
+
+local GoToBestEnabled = false
+local GoToBestConnections = {}
+local currentBestPetFTB = nil
+local isStoppingFTB = false
+local lastEquipTimeFTB = 0
+local lastSpamTimeFTB = 0
+local lastScanTimeFTB = 0
+
+local ESP_ENABLED = true
+local MIN_GEN_FOR_ESP = 50000000
+local ESP_INSTANCES = {}
+local allAnimalsCache = {}
+local plotChannels = {}
+local espScreenGui = nil
+
+local baseCoordinatesFTB = {
+    ["Base 1"] = Vector3.new(-479.5, 17.4, -103.1), ["Base 2"] = Vector3.new(-339.8, 17.4, -98.5),
+    ["Base 3"] = Vector3.new(-340.3, 17.4, 6.0), ["Base 4"] = Vector3.new(-340.0, 17.4, 113.1),
+    ["Base 5"] = Vector3.new(-339.7, 17.0, 221.8), ["Base 6"] = Vector3.new(-479.3, 17.4, 218.5),
+    ["Base 7"] = Vector3.new(-478.5, 17.4, 116.3), ["Base 8"] = Vector3.new(-478.2, 17.4, 5.8)
+}
+
+local subterraneanCoordinates = {
+    ["Base 1"] = Vector3.new(-348.0, -2, 5.9), ["Base 2"] = Vector3.new(-349.2, -2, -100.3),
+    ["Base 3"] = Vector3.new(-470.4, -2, -99.9), ["Base 4"] = Vector3.new(-471.2, -2, 6.6),
+    ["Base 5"] = Vector3.new(-469.6, -2, 114.2), ["Base 6"] = Vector3.new(-469.4, -2, 222.0),
+    ["Base 7"] = Vector3.new(-349.4, -2, 219.1), ["Base 8"] = Vector3.new(-348.4, -2, 112.8)
+}
+
+local function isMyBaseAnimal(animalData)
+    if not animalData or not animalData.plot then return false end
+    local plot = Workspace.Plots:FindFirstChild(animalData.plot)
+    if not plot then return false end
+    local channel = Synchronizer:Get(plot.Name)
+    if channel then
+        local owner = channel:Get("Owner")
+        if owner and ((typeof(owner) == "Instance" and owner.UserId == LocalPlayer.UserId) or (typeof(owner) == "table" and owner.UserId == LocalPlayer.UserId)) then
+            return true
+        end
+    end
+    return false
+end
+
+local function getPodiumWorldPart(animal)
+    local plot = Workspace.Plots:FindFirstChild(animal.plot)
+    local podium = plot and plot.AnimalPodiums:FindFirstChild(animal.slot)
+    if podium then return podium:FindFirstChild("Spawn", true) or podium:FindFirstChild("Base") or podium end
+    return nil
+end
+
+local function clearESPForUID(uid)
+    local rec = ESP_INSTANCES[uid]
+    if rec then
+        if rec.highlight then pcall(function() rec.highlight:Destroy() end) end
+        if rec.billboard then pcall(function() rec.billboard:Destroy() end) end
+        ESP_INSTANCES[uid] = nil
+    end
+end
+
+local function scanSinglePlot(plot)
+    pcall(function()
+        local channel = Synchronizer:Get(plot.Name)
+        if not channel then return end
+        local animalList = channel:Get("AnimalList")
+        if not animalList then return end
+        for i = #allAnimalsCache, 1, -1 do if allAnimalsCache[i].plot == plot.Name then table.remove(allAnimalsCache, i) end end
+        for slot, data in pairs(animalList) do
+            local animalInfo = AnimalsData[data.Index]
+            if animalInfo then
+                local genValue = require(ReplicatedStorage.Shared.Animals):GetGeneration(data.Index, data.Mutation, data.Traits, nil)
+                table.insert(allAnimalsCache, {
+                    name = animalInfo.DisplayName or data.Index,
+                    genText = "$" .. NumberUtils:ToString(genValue) .. "/s",
+                    genValue = genValue,
+                    plot = plot.Name,
+                    slot = tostring(slot),
+                    uid = plot.Name .. "_" .. tostring(slot)
+                })
+            end
+        end
+        table.sort(allAnimalsCache, function(a, b) return a.genValue > b.genValue end)
+    end)
+end
+
+local function setupPlotListener(plot)
+    if plotChannels[plot.Name] then return end
+    plotChannels[plot.Name] = true
+    task.spawn(function() while plot.Parent do scanSinglePlot(plot) task.wait(1) end end)
+end
+
+local function getBestPetDataFTB()
+    local best = nil
+    for _, a in ipairs(allAnimalsCache) do if not isMyBaseAnimal(a) then best = a break end end
+    if best then
+        local model = getPodiumWorldPart(best)
+        if model then
+            local pos = model:GetPivot().Position
+            local coords = pos.Y < 0 and subterraneanCoordinates or baseCoordinatesFTB
+            local closestBase = nil
+            local minDist = math.huge
+            for _, c in pairs(coords) do
+                local d = (pos - c).Magnitude
+                if d < minDist then minDist = d closestBase = c end
+            end
+            return { basePosition = closestBase + Vector3.new(0, 5, 0) }
+        end
+    end
+    return nil
+end
+
+local function equipGrappleHookFTB()
+    local char = LocalPlayer.Character
+    if not char then return end
+    local backpack = LocalPlayer:FindFirstChild("Backpack")
+    local tool = backpack and backpack:FindFirstChild("Grapple Hook") or char:FindFirstChild("Grapple Hook")
+    if tool and tool.Parent ~= char then
+        char:FindFirstChildOfClass("Humanoid"):EquipTool(tool)
+        lastEquipTimeFTB = tick()
+    end
+end
+
+local function spamGrappleHookFTB()
+    local net = ReplicatedStorage:FindFirstChild("Packages") and ReplicatedStorage.Packages:FindFirstChild("Net")
+    local rem = net and net:FindFirstChild("RE/UseItem")
+    if rem then rem:FireServer(0.23450689315795897) lastSpamTimeFTB = tick() end
+end
+
+local function stabilizePlayerFTB()
+    local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if hrp then hrp.AssemblyLinearVelocity = Vector3.zero end
+end
+
+local function cleanStopFTB()
+    isStoppingFTB = true
+    stabilizePlayerFTB()
+    for _, conn in pairs(GoToBestConnections) do if conn then conn:Disconnect() end end
+    GoToBestConnections = {}
+    currentBestPetFTB = nil
+    isStoppingFTB = false
+end
+
+local function startGoToBestFTB()
+    cleanStopFTB()
+    currentBestPetFTB = getBestPetDataFTB()
+    GoToBestConnections.movement = RunService.Heartbeat:Connect(function()
+        if not GoToBestEnabled or isStoppingFTB then return end
+        local char = LocalPlayer.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        if not hrp then return end
+        local now = tick()
+        if now - lastEquipTimeFTB >= 2 then equipGrappleHookFTB() end
+        if now - lastSpamTimeFTB >= 0.2 then spamGrappleHookFTB() end
+        if now - lastScanTimeFTB >= 3 then currentBestPetFTB = getBestPetDataFTB() lastScanTimeFTB = now end
+        if currentBestPetFTB then
+            local target = currentBestPetFTB.basePosition
+            local dist = (hrp.Position - target).Magnitude
+            local speed = dist < 8 and 30 or (dist < 15 and 60 or 180)
+            hrp.AssemblyLinearVelocity = (target - hrp.Position).Unit * speed
+            if dist < 3 then stabilizePlayerFTB() GoToBestEnabled = false updateFlyUI() end
+        end
+    end)
+end
+
+local sg = Instance.new("ScreenGui", CoreGui)
+sg.Name = "MiniFly_Crusty"
+sg.ResetOnSpawn = false
+
+local btn = Instance.new("TextButton", sg)
+btn.Size = UDim2.new(0, 150, 0, 40)
+btn.Position = UDim2.new(0.5, -75, 0.2, 0)
+btn.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+btn.Text = "Fly to best [V]"
+btn.TextColor3 = Color3.new(1, 1, 1)
+btn.Font = Enum.Font.GothamBold
+btn.TextSize = 14
+Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 8)
+local st = Instance.new("UIStroke", btn)
+st.Color = Color3.fromRGB(100, 100, 100)
+st.Thickness = 2
+st.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+
+local dragging, dragStart, startPos
+btn.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging, dragStart, startPos = true, input.Position, btn.Position
+        input.Changed:Connect(function() if input.UserInputState == Enum.UserInputState.End then dragging = false end end)
+    end
+end)
+UserInputService.InputChanged:Connect(function(input)
+    if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+        local delta = input.Position - dragStart
+        btn.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+    end
+end)
+
+function updateFlyUI()
+    if GoToBestEnabled then
+        btn.BackgroundColor3 = Color3.fromRGB(0, 150, 0)
+    else
+        btn.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+    end
+end
+
+local function handleToggle()
+    GoToBestEnabled = not GoToBestEnabled
+    updateFlyUI()
+    if GoToBestEnabled then startGoToBestFTB() else cleanStopFTB() end
+end
+
+btn.MouseButton1Click:Connect(handleToggle)
+UserInputService.InputBegan:Connect(function(i, g) if not g and i.KeyCode == Enum.KeyCode.V then handleToggle() end end)
+Workspace.Plots.ChildAdded:Connect(setupPlotListener)
+for _, p in pairs(Workspace.Plots:GetChildren()) do setupPlotListener(p) end
