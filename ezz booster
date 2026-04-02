@@ -59,7 +59,7 @@ uiStroke.Parent = frame
 
 -- Title
 local title = Instance.new("TextLabel")
-title.Text = "lil nigga got skidded"
+title.Text = "ez skid?"
 title.Font = Enum.Font.LuckiestGuy
 title.TextColor3 = Color3.fromRGB(240, 240, 240)
 title.TextSize = 11
