@@ -13,7 +13,7 @@ local LocalPlayer = Players.LocalPlayer
 
 -- GUI
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "CrisxzWareXHub"
+ScreenGui.Name = "nigga skidding so ez"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = game:GetService("CoreGui")
 
@@ -23,7 +23,7 @@ Icon.Size = UDim2.new(0,55,0,55)
 Icon.Position = UDim2.new(0.05,0,0.5,0)
 Icon.BackgroundColor3 = Color3.fromRGB(0,0,0)
 Icon.BackgroundTransparency = 0.2
-Icon.Text = "WX"
+Icon.Text = "HI"
 Icon.TextColor3 = Color3.new(1,1,1)
 Icon.Font = Enum.Font.GothamBold
 Icon.TextSize = 20
@@ -50,7 +50,7 @@ Stroke.Parent = Main
 local Title = Instance.new("TextLabel")
 Title.Size = UDim2.new(1,0,0,45)
 Title.BackgroundTransparency = 1
-Title.Text = "Crisxz WareX"
+Title.Text = "heros grab"
 Title.Font = Enum.Font.GothamBold
 Title.TextSize = 22
 Title.TextColor3 = Color3.new(1,1,1)
