@@ -1,1 +1,341 @@
-bro
+-- KanyeHub Booster (RyxxSpeedBoostUI)
+-- Cleaned & working version based on execution log
+-- February 2025 reconstruction
+
+local Players        = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local RunService     = game:GetService("RunService")
+local TweenService   = game:GetService("TweenService")
+
+local player         = Players.LocalPlayer
+local playerGui      = player:WaitForChild("PlayerGui")
+
+-- â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+--  Constants & Settings
+-- â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+local DEFAULT_SPEED     = 25
+local DEFAULT_JUMP      = 40
+local DEFAULT_KEYBIND   = Enum.KeyCode.T
+
+local DISCORD_LINK      = "discord.gg/RtMkk9yPG"
+
+local ACCESSORIES_TO_REMOVE = {
+    "Black Shield",
+    "MechHorseHelmet_AccAccessory",
+    "Glasses",
+    "MeshPartAccessory",
+    "LeftShoeAccessory",
+    "RightShoeAccessory",
+}
+
+-- â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+--  UI Creation
+-- â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+local gui = Instance.new("ScreenGui")
+gui.Name = "RyxxSpeedBoostUI"
+gui.ResetOnSpawn = false
+gui.Parent = playerGui
+
+local frame = Instance.new("Frame")
+frame.Name = "MainFrame"
+frame.Size = UDim2.new(0, 144, 0, 155)
+frame.Position = UDim2.new(1, -340, 0, 50)
+frame.BackgroundColor3 = Color3.fromRGB(10, 10, 10)
+frame.BackgroundTransparency = 0.1
+frame.BorderSizePixel = 0
+frame.Active = true
+frame.Parent = gui
+
+local uiCorner = Instance.new("UICorner")
+uiCorner.CornerRadius = UDim.new(0, 10)
+uiCorner.Parent = frame
+
+local uiStroke = Instance.new("UIStroke")
+uiStroke.Color = Color3.fromRGB(210, 210, 210)
+uiStroke.Thickness = 1.6
+uiStroke.Parent = frame
+
+-- Title
+local title = Instance.new("TextLabel")
+title.Text = "lil nigga got skidded"
+title.Font = Enum.Font.LuckiestGuy
+title.TextColor3 = Color3.fromRGB(240, 240, 240)
+title.TextSize = 11
+title.BackgroundTransparency = 1
+title.Size = UDim2.new(1, -16, 0, 22)
+title.Position = UDim2.new(0, 16, 0, 2)
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Parent = frame
+
+-- Expand / collapse button (placeholder â€” not fully implemented in log)
+local expandBtn = Instance.new("TextButton")
+expandBtn.Size = UDim2.new(0, 19, 0, 19)
+expandBtn.Position = UDim2.new(1, -22, 0, 1)
+expandBtn.Text = "â–¼"
+expandBtn.Font = Enum.Font.GothamBold
+expandBtn.TextSize = 14.4
+expandBtn.TextColor3 = Color3.fromRGB(240, 240, 240)
+expandBtn.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+expandBtn.Parent = frame
+
+local expandCorner = Instance.new("UICorner")
+expandCorner.CornerRadius = UDim.new(0, 4)
+expandCorner.Parent = expandBtn
+
+-- Content container
+local content = Instance.new("Frame")
+content.Name = "ContentFrame"
+content.Position = UDim2.new(0, 0, 0, 22)
+content.Size = UDim2.new(1, 0, 1, -22)
+content.BackgroundTransparency = 1
+content.Parent = frame
+
+local listLayout = Instance.new("UIListLayout")
+listLayout.Padding = UDim.new(0, 4)
+listLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+listLayout.Parent = content
+
+local padding = Instance.new("UIPadding")
+padding.PaddingTop = UDim.new(0, 6)
+padding.PaddingBottom = UDim.new(0, 6)
+padding.Parent = content
+
+-- Speed row
+local speedRow = Instance.new("Frame")
+speedRow.Size = UDim2.new(1, -16, 0, 22)
+speedRow.BackgroundTransparency = 1
+speedRow.Parent = content
+
+local speedLabel = Instance.new("TextLabel")
+speedLabel.Text = "Speed"
+speedLabel.Font = Enum.Font.GothamBold
+speedLabel.TextSize = 10
+speedLabel.Size = UDim2.new(0.4, 0, 1, 0)
+speedLabel.BackgroundTransparency = 1
+speedLabel.TextColor3 = Color3.fromRGB(240, 240, 240)
+speedLabel.Parent = speedRow
+
+local speedInput = Instance.new("TextBox")
+speedInput.Size = UDim2.new(0.6, -4, 0, 17)
+speedInput.Position = UDim2.new(0.4, 0, 0, 2)
+speedInput.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+speedInput.TextColor3 = Color3.fromRGB(240, 240, 240)
+speedInput.Font = Enum.Font.GothamBold
+speedInput.TextSize = 10.4
+speedInput.ClearTextOnFocus = false
+speedInput.Text = tostring(DEFAULT_SPEED)
+speedInput.Parent = speedRow
+
+local speedCorner = Instance.new("UICorner")
+speedCorner.CornerRadius = UDim.new(0, 4)
+speedCorner.Parent = speedInput
+
+-- Jump row (same structure)
+local jumpRow = speedRow:Clone()
+jumpRow.Parent = content
+
+local jumpLabel = jumpRow:FindFirstChildWhichIsA("TextLabel")
+jumpLabel.Text = "Jump"
+
+local jumpInput = jumpRow:FindFirstChildWhichIsA("TextBox")
+jumpInput.Text = tostring(DEFAULT_JUMP)
+
+-- Activate button
+local activateBtn = Instance.new("TextButton")
+activateBtn.Size = UDim2.new(1, -16, 0, 25)
+activateBtn.Font = Enum.Font.LuckiestGuy
+activateBtn.TextSize = 11.1
+activateBtn.Text = "Activate"
+activateBtn.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+activateBtn.TextColor3 = Color3.fromRGB(240, 240, 240)
+activateBtn.AutoButtonColor = false
+activateBtn.Parent = content
+
+local activateCorner = Instance.new("UICorner")
+activateCorner.CornerRadius = UDim.new(0, 6)
+activateCorner.Parent = activateBtn
+
+-- Keybind row
+local keybindRow = speedRow:Clone()
+keybindRow.Parent = content
+
+local keybindLabel = keybindRow:FindFirstChildWhichIsA("TextLabel")
+keybindLabel.Text = "Keybind"
+
+local keybindBtn = keybindRow:FindFirstChildWhichIsA("TextBox")
+keybindBtn.Text = "T"
+
+-- Discord label
+local discord = Instance.new("TextLabel")
+discord.Text = DISCORD_LINK
+discord.Font = Enum.Font.GothamBold
+discord.TextSize = 10
+discord.Size = UDim2.new(1, -16, 0, 12)
+discord.BackgroundTransparency = 1
+discord.TextColor3 = Color3.new(1,1,1)
+discord.TextXAlignment = Enum.TextXAlignment.Center
+discord.Parent = content
+
+-- â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+--  State & Logic
+-- â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+local boostEnabled   = false
+local boostConn      = nil
+local currentSpeed   = DEFAULT_SPEED
+local currentJump    = DEFAULT_JUMP
+local currentKeybind = DEFAULT_KEYBIND
+
+local function updateButtonVisual()
+    activateBtn.Text = boostEnabled and "Activated" or "Activate"
+    -- Optional: you could tween color here if desired
+end
+
+local function applyBoost()
+    if not player.Character then return end
+
+    local humanoid = player.Character:FindFirstChildOfClass("Humanoid")
+    if not humanoid then return end
+
+    humanoid.UseJumpPower = true
+    humanoid.JumpPower = currentJump
+end
+
+local function removeBoost()
+    if not player.Character then return end
+
+    local humanoid = player.Character:FindFirstChildOfClass("Humanoid")
+    if not humanoid then return end
+
+    humanoid.JumpPower = 50  -- Roblox default
+end
+
+local function toggleBoost()
+    boostEnabled = not boostEnabled
+    updateButtonVisual()
+
+    if boostEnabled then
+        applyBoost()
+
+        if boostConn then boostConn:Disconnect() end
+        boostConn = RunService.Heartbeat:Connect(function()
+            if not player.Character then return end
+            local hrp = player.Character:FindFirstChild("HumanoidRootPart")
+            local humanoid = player.Character:FindFirstChildOfClass("Humanoid")
+            if not hrp or not humanoid then return end
+
+            local moveDir = humanoid.MoveDirection
+            if moveDir.Magnitude > 0 then
+                local flatDir = Vector3.new(moveDir.X, 0, moveDir.Z).Unit
+                hrp.Velocity = Vector3.new(
+                    flatDir.X * currentSpeed,
+                    hrp.Velocity.Y,
+                    flatDir.Z * currentSpeed
+                )
+            end
+        end)
+    else
+        if boostConn then
+            boostConn:Disconnect()
+            boostConn = nil
+        end
+        removeBoost()
+    end
+end
+
+-- â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+--  Connections
+-- â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+-- Button toggle
+activateBtn.MouseButton1Click:Connect(toggleBoost)
+
+-- Keybind toggle
+UserInputService.InputBegan:Connect(function(input, gpe)
+    if gpe then return end
+    if input.KeyCode == currentKeybind then
+        toggleBoost()
+    end
+end)
+
+-- Input boxes
+speedInput.FocusLost:Connect(function(enter)
+    if enter then
+        local num = tonumber(speedInput.Text)
+        currentSpeed = num and math.max(1, num) or DEFAULT_SPEED
+        speedInput.Text = tostring(currentSpeed)
+    end
+end)
+
+jumpInput.FocusLost:Connect(function(enter)
+    if enter then
+        local num = tonumber(jumpInput.Text)
+        currentJump = num and math.max(1, num) or DEFAULT_JUMP
+        jumpInput.Text = tostring(currentJump)
+
+        -- Apply immediately if boost is active
+        if boostEnabled then
+            applyBoost()
+        end
+    end
+end)
+
+-- Character respawn / accessory cleanup
+local function onCharacterAdded(char)
+    -- Remove unwanted accessories
+    for _, name in ipairs(ACCESSORIES_TO_REMOVE) do
+        local part = char:FindFirstChild(name)
+        if part then part:Destroy() end
+    end
+
+    -- Re-apply boost if it was enabled
+    if boostEnabled then
+        task.wait(0.3) -- small delay for humanoid
+        applyBoost()
+    end
+end
+
+if player.Character then
+    onCharacterAdded(player.Character)
+end
+player.CharacterAdded:Connect(onCharacterAdded)
+
+-- Basic dragging (top bar)
+local dragging, dragInput, dragStart, startPos
+
+frame.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPos = frame.Position
+
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                dragging = false
+            end
+        end)
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+        dragInput = input
+    end
+end)
+
+RunService.RenderStepped:Connect(function()
+    if dragging and dragInput then
+        local delta = dragInput.Position - dragStart
+        frame.Position = UDim2.new(
+            startPos.X.Scale,
+            startPos.X.Offset + delta.X,
+            startPos.Y.Scale,
+            startPos.Y.Offset + delta.Y
+        )
+    end
+end)
+
+-- Optional: initial welcome message / log
+print("[KanyeHub Booster] Loaded | Speed:" .. currentSpeed .. " | Jump:" .. currentJump .. " | Key: " .. currentKeybind.Name)bro
