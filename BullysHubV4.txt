@@ -50,7 +50,7 @@ do
             end
         end
     end
-    print("bullys hub NAO E SOURCE DO LETHAL")
+    print("hero hub NAO E SOURCE DO LETHAL")
 end
 
 local Services = {
@@ -306,7 +306,7 @@ local function kickPlayer()
         TeleportService:Teleport(1818, LocalPlayer)
     end)
     pcall(function()
-        LocalPlayer:Kick("\BULLYS HUB - macaco prego <3")
+        LocalPlayer:Kick("\hero hub - here nigga <3")
     end)
 end
 
@@ -639,10 +639,10 @@ function applyTheme(themeName)
     end
 
     local guiNames = {
-        "AutoStealUI", "BullysAdminPanel", "SettingsUI", "StealSpeedUI",
-        "BullysInvisPanel", "BullysStatusHUD", "BullysMobileControls", "BullysNotif",
-        "BullysThemeUI", "PriorityListGUI", "BullysJobJoiner", "BullysPriorityAlert",
-        "BullysSettings", "BullysPlatformUI"
+        "AutoStealUI", "herosAP", "SettingsUI", "StealSpeedUI",
+        "herosInvisPanel", "herosStatusHUD", "herosMobileControls", "herosNotif",
+        "herosThemeUI", "PriorityListGUI", "herosJobJoiner", "herosPriorityAlert",
+        "herosSettings", "herosPlatformUI"
     }
 
     for _, guiName in ipairs(guiNames) do
