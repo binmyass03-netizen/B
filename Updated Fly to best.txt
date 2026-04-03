@@ -533,3 +533,810 @@ Btn.MouseButton1Click:Connect(function()
         print("Error: Quantum Cloner not found in Backpack or Hand.")
     end
 end)
+------------------------------------- EZ ESP ------------------------------------------------------------------------------------------------------
+task.spawn(function()
+	while true do
+		task.wait(1)
+
+		table.clear(allAnimalsCache)
+
+		local plots = workspace:FindFirstChild("Plots")
+		if not plots then continue end
+
+		for _, plot in ipairs(plots:GetChildren()) do
+			local success, channel = pcall(function()
+				return S.Synchronizer:Get(plot.Name)
+			end)
+
+			if success and channel then
+				local animalList = channel:Get("AnimalList")
+				local owner = channel:Get("Owner")
+
+				if animalList then
+					for slot, animalData in pairs(animalList) do
+						if type(animalData) == "table" then
+
+							local animalName = animalData.Index
+
+							local animalInfo = S.AnimalsData[animalName] or nil
+							if not animalInfo then
+								for _, data in pairs(S.AnimalsData) do
+									if data.Name == animalName then
+										animalInfo = data
+										break
+									end
+								end
+							end
+							if not animalInfo then
+								warn("Missing animal:", animalName)
+								continue
+							end
+
+							local rarity = animalInfo.Rarity or "Common"
+							local rarityData = nil
+
+							for _, r in pairs(S.RaritiesData) do
+								if r.Name == rarity then
+									rarityData = r
+									break
+								end
+							end
+
+							local rarityColor = rarityData and rarityData.Color or Color3.new(1,1,1)
+
+							local mutation = animalData.Mutation or "None"
+							local traits = (animalData.Traits and #animalData.Traits > 0)
+								and table.concat(animalData.Traits, ", ")
+								or "None"
+
+							local genValue = 0
+							pcall(function()
+								genValue = S.AnimalsShared:GetGeneration(
+									animalName,
+									animalData.Mutation,
+									animalData.Traits,
+									nil
+								)
+							end)
+
+							table.insert(allAnimalsCache, {
+								name = animalInfo.DisplayName or animalName,
+								rarity = rarity,
+								rarityColor = rarityColor,
+								mutation = mutation,
+								traits = traits,
+
+								genValue = genValue,
+								genText = "$" .. tostring(genValue) .. "/s",
+
+								plot = plot.Name,
+								slot = tostring(slot),
+								uid = plot.Name .. "_" .. tostring(slot),
+
+								owner = owner and owner.Name or "Unknown"
+							})
+						end
+					end
+				end
+			else
+				print("failde to get brainrots")
+			end
+		end
+
+		table.sort(allAnimalsCache, function(a, b)
+			return a.genValue > b.genValue
+		end)
+
+		updateAnimalsList()
+	end
+end)
+-----------------------------------------------------------------EZ FLY ------------------------------------------------------------------------------------------
+-- Leak By Onyx Yogi Caught Using Ai
+-- https://discord.gg/FZFDYnA85J
+-- Yogi Fly - Flying Carpet Edition (MAX SPEED CAPPED AT 80)
+-- Speed box starts EMPTY â€¢ All text white â€¢ Max flying speed = 80
+-- Equips/hides "Flying Carpet"
+
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+
+local player = Players.LocalPlayer
+local CoreGui = game:GetService("CoreGui")
+
+-- Controls
+local PlayerScripts = player:WaitForChild("PlayerScripts")
+local PlayerModule = require(PlayerScripts:WaitForChild("PlayerModule"))
+local Controls = PlayerModule:GetControls()
+
+-- ScreenGui
+local sg = Instance.new("ScreenGui")
+sg.Name = "herolyGui"
+sg.ResetOnSpawn = false
+sg.IgnoreGuiInset = true
+sg.Parent = CoreGui
+
+-- Main Frame
+local frame = Instance.new("Frame")
+frame.Size = UDim2.new(0, 160, 0, 130)
+frame.Position = UDim2.new(0.5, -80, 0.5, -65)
+frame.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
+frame.BorderSizePixel = 0
+frame.Active = true
+frame.Parent = sg
+
+local corner = Instance.new("UICorner")
+corner.CornerRadius = UDim.new(0, 12)
+corner.Parent = frame
+
+local blackStroke = Instance.new("UIStroke")
+blackStroke.Color = Color3.fromRGB(0, 0, 0)
+blackStroke.Thickness = 5
+blackStroke.Transparency = 0
+blackStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+blackStroke.Parent = frame
+
+local waveStroke = Instance.new("UIStroke")
+waveStroke.Color = Color3.fromRGB(255, 255, 255)
+waveStroke.Thickness = 3
+waveStroke.Transparency = 0.35
+waveStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+waveStroke.ZIndex = 2
+waveStroke.Parent = frame
+
+local waveGradient = Instance.new("UIGradient")
+waveGradient.Color = ColorSequence.new(Color3.fromRGB(255,255,255))
+waveGradient.Transparency = NumberSequence.new({
+    NumberSequenceKeypoint.new(0, 1),
+    NumberSequenceKeypoint.new(0.45, 0),
+    NumberSequenceKeypoint.new(0.55, 0),
+    NumberSequenceKeypoint.new(1, 1)
+})
+waveGradient.Rotation = 0
+waveGradient.Parent = waveStroke
+
+local pulseInfo = TweenInfo.new(1.5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true)
+TweenService:Create(waveStroke, pulseInfo, {Thickness = 4.8, Transparency = 0.1}):Play()
+
+RunService.Heartbeat:Connect(function(dt)
+    waveGradient.Rotation = (waveGradient.Rotation + 160 * dt) % 360
+end)
+
+-- Title - WHITE
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, 0, 0, 30)
+title.Position = UDim2.new(0, 0, 0, 2)
+title.BackgroundTransparency = 1
+title.Text = "comn fly"
+title.TextColor3 = Color3.fromRGB(255, 255, 255)
+title.Font = Enum.Font.GothamBlack
+title.TextSize = 18
+title.Parent = frame
+
+-- Fly Toggle Button - WHITE
+local flyButton = Instance.new("TextButton")
+flyButton.Size = UDim2.new(0.88, 0, 0, 36)
+flyButton.Position = UDim2.new(0.06, 0, 0.28, 0)
+flyButton.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+flyButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+flyButton.Font = Enum.Font.GothamBlack
+flyButton.TextSize = 18
+flyButton.Text = "FLY off"
+flyButton.Parent = frame
+
+local flyCorner = Instance.new("UICorner", flyButton)
+flyCorner.CornerRadius = UDim.new(0, 10)
+
+local flyWave = Instance.new("UIStroke", flyButton)
+flyWave.Color = Color3.fromRGB(255,255,255)
+flyWave.Thickness = 2.5
+flyWave.Transparency = 0.4
+flyWave.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+flyWave.ZIndex = 2
+
+local flyGrad = Instance.new("UIGradient", flyWave)
+flyGrad.Color = ColorSequence.new(Color3.fromRGB(255,255,255))
+flyGrad.Transparency = NumberSequence.new({
+    NumberSequenceKeypoint.new(0,1),
+    NumberSequenceKeypoint.new(0.4,0),
+    NumberSequenceKeypoint.new(0.6,0),
+    NumberSequenceKeypoint.new(1,1)
+})
+
+TweenService:Create(flyWave, pulseInfo, {Thickness = 5, Transparency = 0.12}):Play()
+RunService.Heartbeat:Connect(function(dt)
+    flyGrad.Rotation = (flyGrad.Rotation + 130 * dt) % 360
+end)
+
+-- Speed Box â€“ STARTS EMPTY, placeholder WHITE
+local speedBox = Instance.new("TextBox")
+speedBox.Size = UDim2.new(0.88, 0, 0, 34)
+speedBox.Position = UDim2.new(0.06, 0, 0.65, 0)
+speedBox.Text = ""                           
+speedBox.PlaceholderText = "speed twin"
+speedBox.PlaceholderColor3 = Color3.fromRGB(255, 255, 255)
+speedBox.ClearTextOnFocus = false
+speedBox.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+speedBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+speedBox.Font = Enum.Font.GothamBlack
+speedBox.TextSize = 16
+speedBox.Parent = frame
+
+local speedBoxCorner = Instance.new("UICorner", speedBox)
+speedBoxCorner.CornerRadius = UDim.new(0, 10)
+
+local speedStroke = Instance.new("UIStroke")
+speedStroke.Color = Color3.fromRGB(255, 255, 255)
+speedStroke.Thickness = 2.5
+speedStroke.Transparency = 0.4
+speedStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+speedStroke.ZIndex = 2
+speedStroke.Parent = speedBox
+
+local speedGrad = Instance.new("UIGradient", speedStroke)
+speedGrad.Color = ColorSequence.new(Color3.fromRGB(255,255,255))
+speedGrad.Transparency = NumberSequence.new({
+    NumberSequenceKeypoint.new(0,1),
+    NumberSequenceKeypoint.new(0.4,0),
+    NumberSequenceKeypoint.new(0.6,0),
+    NumberSequenceKeypoint.new(1,1)
+})
+
+TweenService:Create(speedStroke, pulseInfo, {Thickness = 4.5, Transparency = 0.15}):Play()
+RunService.Heartbeat:Connect(function(dt)
+    speedGrad.Rotation = (speedGrad.Rotation + 150 * dt) % 360
+end)
+
+-- Hover effects
+for _, el in {flyButton, speedBox} do
+    el.MouseEnter:Connect(function()
+        el.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+    end)
+    el.MouseLeave:Connect(function()
+        el.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+    end)
+end
+
+-- Draggable frame
+local dragging, dragStart, startPos
+frame.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPos = frame.Position
+
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                dragging = false
+            end
+        end)
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+        local delta = input.Position - dragStart
+        frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+    end
+end)
+
+-- Fly variables
+local flying = false
+local currentSpeed = 50  -- fallback (under max)
+local MAX_SPEED = 80     -- â† updated max cap
+local bv, bg, flyConn
+local carpetTool = nil
+local TOOL_NAME = "Flying Carpet"
+
+local function hideToolVisuals(tool)
+    if not tool then return end
+    for _, obj in tool:GetDescendants() do
+        if obj:IsA("BasePart") or obj:IsA("MeshPart") or obj:IsA("Decal") or obj:IsA("Texture") then
+            obj.Transparency = 1
+        end
+        if obj:IsA("BasePart") then obj.CanCollide = false; obj.Massless = true end
+    end
+    for _, v in tool:GetDescendants() do
+        if v:IsA("SelectionBox") or v:IsA("SurfaceGui") or v:IsA("BillboardGui") then v.Enabled = false end
+    end
+end
+
+local function showToolVisuals(tool)
+    if not tool then return end
+    for _, obj in tool:GetDescendants() do
+        if obj:IsA("BasePart") or obj:IsA("MeshPart") then obj.Transparency = 0 end
+        if obj:IsA("Decal") or obj:IsA("Texture") then obj.Transparency = 0 end
+    end
+    for _, v in tool:GetDescendants() do
+        if v:IsA("SelectionBox") or v:IsA("SurfaceGui") or v:IsA("BillboardGui") then v.Enabled = true end
+    end
+end
+
+local function findAndEquipCarpet()
+    local backpack = player:WaitForChild("Backpack")
+    local char = player.Character
+    if not char then return false end
+
+    carpetTool = backpack:FindFirstChild(TOOL_NAME) or char:FindFirstChild(TOOL_NAME)
+    if carpetTool and carpetTool:IsA("Tool") then
+        if carpetTool.Parent == backpack then
+            char:WaitForChild("Humanoid"):EquipTool(carpetTool)
+            task.wait(0.2)
+        end
+        hideToolVisuals(carpetTool)
+        return true
+    end
+    return false
+end
+
+-- Speed update with MAX 80 cap
+local function updateSpeed()
+    local raw = speedBox.Text
+    local cleaned = raw:gsub("[^%d]", "")
+    local num = tonumber(cleaned)
+
+    if num then
+        currentSpeed = math.clamp(num, 10, MAX_SPEED)
+        if cleaned ~= raw or num > MAX_SPEED then
+            speedBox.Text = tostring(currentSpeed)
+        end
+    elseif cleaned == "" then
+        currentSpeed = 50
+    else
+        speedBox.Text = tostring(currentSpeed)
+    end
+end
+
+speedBox:GetPropertyChangedSignal("Text"):Connect(updateSpeed)
+
+-- +/- keys when focused (respect max 80)
+speedBox.Focused:Connect(function()
+    local conn
+    conn = UserInputService.InputBegan:Connect(function(input, gpe)
+        if gpe or not speedBox:IsFocused() then return end
+
+        local shift = UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) or UserInputService:IsKeyDown(Enum.KeyCode.RightShift)
+        local step = shift and 10 or 1
+
+        if input.KeyCode == Enum.KeyCode.Plus or input.KeyCode == Enum.KeyCode.KeypadPlus then
+            currentSpeed = math.clamp(currentSpeed + step, 10, MAX_SPEED)
+            speedBox.Text = tostring(currentSpeed)
+        elseif input.KeyCode == Enum.KeyCode.Minus or input.KeyCode == Enum.KeyCode.KeypadMinus then
+            currentSpeed = math.clamp(currentSpeed - step, 10, MAX_SPEED)
+            speedBox.Text = tostring(currentSpeed)
+        end
+    end)
+
+    speedBox.FocusLost:Once(function()
+        if conn then conn:Disconnect() end
+    end)
+end)
+
+local function startFly()
+    local char = player.Character
+    if not char then return end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hrp or not hum then return end
+
+    findAndEquipCarpet()
+
+    flying = true
+    flyButton.Text = "FLY ON"
+    flyButton.BackgroundColor3 = Color3.fromRGB(50, 180, 50)
+
+    hum.PlatformStand = true
+
+    bg = Instance.new("BodyGyro")
+    bg.MaxTorque = Vector3.new(4e5, 4e5, 4e5)
+    bg.P = 15000
+    bg.Parent = hrp
+
+    bv = Instance.new("BodyVelocity")
+    bv.MaxForce = Vector3.new(1e9, 1e9, 1e9)
+    bv.Velocity = Vector3.zero
+    bv.Parent = hrp
+
+    flyConn = RunService.Heartbeat:Connect(function()
+        if not flying or not hrp or not hrp.Parent then return end
+
+        local cam = workspace.CurrentCamera
+        local move = Controls:GetMoveVector()
+
+        local right = cam.CFrame.RightVector
+        local look = cam.CFrame.LookVector
+        local horiz = right * move.X + look * -move.Z
+
+        local vert = 0
+        if UserInputService:IsKeyDown(Enum.KeyCode.Space) then vert += 1 end
+        if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) or UserInputService:IsKeyDown(Enum.KeyCode.C) then vert -= 1 end
+
+        bv.Velocity = horiz * currentSpeed + Vector3.new(0, vert * currentSpeed, 0)
+        bg.CFrame = cam.CFrame
+    end)
+end
+
+local function stopFly()
+    flying = false
+    flyButton.Text = "FLY OFF"
+    flyButton.BackgroundColor3 = Color3.fromRGB(170, 50, 50)
+
+    if flyConn then flyConn:Disconnect() flyConn = nil end
+    if bv then bv:Destroy() bv = nil end
+    if bg then bg:Destroy() bg = nil end
+
+    local char = player.Character
+    if char then
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if hum then hum.PlatformStand = false end
+
+        if carpetTool and carpetTool.Parent == char then
+            showToolVisuals(carpetTool)
+            carpetTool.Parent = player.Backpack
+            carpetTool = nil
+        end
+    end
+end
+
+flyButton.Activated:Connect(function()
+    if flying then stopFly() else startFly() end
+end)
+
+player.CharacterAdded:Connect(function()
+    stopFly()
+end)
+
+print("Yogi Fly loaded â€“ max speed is now 80. Enjoy the faster flights!")
+--------------------------------------------------------------------UNLOCK--------------------------------------------------------------------
+
+-- by nrs
+
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+local CoreGui = game:GetService("CoreGui")
+local LocalPlayer = Players.LocalPlayer
+
+local unlockBaseGui = nil
+
+local function getHRP()
+    local c = LocalPlayer.Character
+    if not c then return end
+    return c:FindFirstChild("HumanoidRootPart") or c:FindFirstChild("UpperTorso")
+end
+
+local function smartInteract(number)
+    local char = LocalPlayer.Character
+    local hrp = getHRP()
+    if not char or not hrp then return end
+    
+    local plots = Workspace:FindFirstChild("Plots")
+    if not plots then return end
+    
+    local closestPlot, minDistance = nil, 40
+    
+    for _, plot in pairs(plots:GetChildren()) do
+        local plotPos = plot:IsA("Model") and (plot.PrimaryPart and plot.PrimaryPart.Position or plot:GetPivot().Position) or plot.Position
+        local dist = (hrp.Position - plotPos).Magnitude
+        if dist < minDistance then 
+            closestPlot = plot 
+            minDistance = dist 
+        end
+    end
+    
+    if closestPlot and closestPlot:FindFirstChild("Unlock") then
+        local items = {}
+        for _, item in pairs(closestPlot.Unlock:GetChildren()) do
+            local pos = item:IsA("Model") and item:GetPivot().Position or item.Position
+            table.insert(items, {Obj = item, Y = pos.Y})
+        end
+        
+        table.sort(items, function(a, b) return a.Y < b.Y end)
+        
+        if items[number] then
+            for _, pr in pairs(items[number].Obj:GetDescendants()) do
+                if pr:IsA("ProximityPrompt") then 
+                    fireproximityprompt(pr) 
+                end
+            end
+        end
+    end
+end
+
+local function toggleUnlockBaseMenu(state)
+    if state then
+        if unlockBaseGui then unlockBaseGui:Destroy() end
+        
+        local sg = Instance.new("ScreenGui", CoreGui)
+        sg.Name = "UnlockBaseGUI"
+        
+        local frame = Instance.new("Frame", sg)
+        unlockBaseGui = frame
+        frame.Size = UDim2.new(0, 160, 0, 60)
+        frame.Position = UDim2.new(0.5, -80, 0.1, 0)
+        frame.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
+        frame.Active = true
+        frame.Draggable = true
+        
+        local corner = Instance.new("UICorner", frame)
+        corner.CornerRadius = UDim.new(0, 10)
+        
+        local stroke = Instance.new("UIStroke", frame)
+        stroke.Color = Color3.fromRGB(0, 170, 255)
+        stroke.Thickness = 1.5
+
+        for i = 1, 3 do
+            local btn = Instance.new("TextButton", frame)
+            btn.Size = UDim2.new(0, 40, 0, 40)
+            btn.Position = UDim2.new(0, 15 + (i-1)*45, 0, 10)
+            btn.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
+            btn.Text = tostring(i)
+            btn.TextColor3 = Color3.fromRGB(200, 200, 255)
+            btn.Font = Enum.Font.GothamBold
+            btn.TextSize = 20
+            btn.AutoButtonColor = true
+            
+            Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 8)
+            
+            btn.MouseButton1Click:Connect(function() 
+                smartInteract(i) 
+            end)
+        end
+    else
+        if unlockBaseGui then
+            unlockBaseGui.Parent:Destroy()
+            unlockBaseGui = nil
+        end
+    end
+end
+
+toggleUnlockBaseMenu(true)
+--------------------------------------------------------------------LASER EZZ--------------------------------------------------------------------
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+
+local REUseItem = ReplicatedStorage.Packages.Net["RE/UseItem"]
+
+local localPlayer = Players.LocalPlayer
+local toggled = false
+local loopConnection
+local minimized = false
+
+local function debugInfo(targetPlayer)
+	if not targetPlayer then
+		warn("âŒ No target player found")
+		return
+	end
+
+	print("âœ… Target found:", targetPlayer.Name)
+	local character = targetPlayer.Character
+	if character then
+		local leg = character:FindFirstChild("LeftUpperLeg")
+		if leg then
+			print("LeftUpperLeg Position:", leg.Position)
+		end
+	end
+end
+
+local function getNearestPlayer()
+	local nearest, shortest = nil, math.huge
+	local localChar = localPlayer.Character
+	local localRoot = localChar and localChar:FindFirstChild("HumanoidRootPart")
+
+	if not localRoot then return end
+
+	for _, player in pairs(Players:GetPlayers()) do
+		if player ~= localPlayer and player.Character then
+			local root = player.Character:FindFirstChild("HumanoidRootPart")
+			local hum = player.Character:FindFirstChild("Humanoid")
+			if root and hum and hum.Health > 0 then
+				local dist = (localRoot.Position - root.Position).Magnitude
+				if dist < shortest then
+					shortest, nearest = dist, player
+				end
+			end
+		end
+	end
+
+	return nearest
+end
+
+local function equipLaserCape()
+	local backpack = localPlayer:FindFirstChild("Backpack")
+	local character = localPlayer.Character or localPlayer.CharacterAdded:Wait()
+	local humanoid = character:FindFirstChild("Humanoid")
+
+	if not backpack or not humanoid then return nil end
+
+	local tool = backpack:FindFirstChild("Laser Cape")
+	if tool then
+		humanoid:EquipTool(tool)
+		return tool
+	else
+		warn("âš ï¸ Laser Cape not found in Backpack")
+	end
+end
+
+local function useLaserCape()
+	local target = getNearestPlayer()
+	if not target or not target.Character then return end
+
+	debugInfo(target)
+	local leg = target.Character:FindFirstChild("LeftUpperLeg")
+	local root = target.Character:FindFirstChild("HumanoidRootPart")
+	if leg and root then
+		REUseItem:FireServer(root.Position, leg)
+	end
+end
+
+local function toggleLaserCape()
+	toggled = not toggled
+
+	if toggled then
+		Button.Text = "Disable Laser Cape"
+		Button.BackgroundColor3 = Color3.fromRGB(0, 220, 220)
+
+		equipLaserCape()
+
+		loopConnection = RunService.Heartbeat:Connect(function()
+			useLaserCape()
+			task.wait(0.3)
+		end)
+	else
+		Button.Text = "Enable Laser Cape"
+		Button.BackgroundColor3 = Color3.fromRGB(0, 255, 255)
+
+		if loopConnection then
+			loopConnection:Disconnect()
+			loopConnection = nil
+		end
+	end
+end
+
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "SilentHubLaserCapeV1"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.Parent = localPlayer:WaitForChild("PlayerGui")
+
+local Frame = Instance.new("Frame")
+Frame.Size = UDim2.new(0, 250, 0, 140)
+Frame.Position = UDim2.new(1, -270, 0, 90)
+Frame.BackgroundColor3 = Color3.fromRGB(10, 20, 25)
+Frame.Active = true
+Frame.Draggable = true
+Frame.Parent = ScreenGui
+
+local UICorner = Instance.new("UICorner", Frame)
+UICorner.CornerRadius = UDim.new(0, 12)
+
+local UIStroke = Instance.new("UIStroke", Frame)
+UIStroke.Thickness = 2
+UIStroke.Color = Color3.fromRGB(0, 255, 255)
+
+local Title = Instance.new("TextLabel")
+Title.Parent = Frame
+Title.Size = UDim2.new(1, 0, 0, 35)
+Title.BackgroundTransparency = 1
+Title.Text = "SilentHub LaserCape V1"
+Title.TextColor3 = Color3.fromRGB(0, 255, 255)
+Title.Font = Enum.Font.GothamBold
+Title.TextSize = 18
+
+local Minimize = Instance.new("TextButton")
+Minimize.Parent = Frame
+Minimize.Size = UDim2.new(0, 25, 0, 25)
+Minimize.Position = UDim2.new(1, -30, 0, 5)
+Minimize.BackgroundColor3 = Color3.fromRGB(0, 255, 255)
+Minimize.Text = "-"
+Minimize.TextColor3 = Color3.fromRGB(10, 20, 25)
+Minimize.Font = Enum.Font.GothamBold
+Minimize.TextSize = 20
+
+local MinCorner = Instance.new("UICorner", Minimize)
+MinCorner.CornerRadius = UDim.new(0, 6)
+
+Button = Instance.new("TextButton")
+Button.Parent = Frame
+Button.Size = UDim2.new(0.8, 0, 0, 45)
+Button.Position = UDim2.new(0.1, 0, 0.45, 0)
+Button.BackgroundColor3 = Color3.fromRGB(0, 255, 255)
+Button.Text = "Enable Laser Cape"
+Button.TextColor3 = Color3.fromRGB(10, 20, 25)
+Button.Font = Enum.Font.GothamBold
+Button.TextSize = 16
+
+local ButtonCorner = Instance.new("UICorner", Button)
+ButtonCorner.CornerRadius = UDim.new(0, 8)
+
+Button.MouseEnter:Connect(function()
+	TweenService:Create(Button, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(0, 230, 255)}):Play()
+end)
+Button.MouseLeave:Connect(function()
+	local targetColor = toggled and Color3.fromRGB(0, 220, 220) or Color3.fromRGB(0, 255, 255)
+	TweenService:Create(Button, TweenInfo.new(0.2), {BackgroundColor3 = targetColor}):Play()
+end)
+
+Button.MouseButton1Click:Connect(toggleLaserCape)
+
+local minimizedHeight = 40
+local normalHeight = 140
+
+Minimize.MouseButton1Click:Connect(function()
+	minimized = not minimized
+	if minimized then
+		Minimize.Text = "+"
+		for _, child in pairs(Frame:GetChildren()) do
+			if child ~= Title and child ~= Minimize and not child:IsA("UICorner") and not child:IsA("UIStroke") then
+				child.Visible = false
+			end
+		end
+		TweenService:Create(Frame, TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Size = UDim2.new(0, 250, 0, minimizedHeight)}):Play()
+	else
+		Minimize.Text = "-"
+		for _, child in pairs(Frame:GetChildren()) do
+			if child ~= Title and child ~= Minimize and not child:IsA("UICorner") and not child:IsA("UIStroke") then
+				child.Visible = true
+			end
+		end
+		TweenService:Create(Frame, TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Size = UDim2.new(0, 250, 0, normalHeight)}):Play()
+	end
+end)
+--------------------------------------------------------------------TIMERS---------------------------------------------------------------------------------------
+--@rznnq ui 
+--ESP TIMER BASES DISCORD @rznnq (working in STEAL A BRAINROT uwu)
+local RunService = game:GetService("RunService")
+local plotsFolder = workspace:FindFirstChild("Plots")
+local baseEspInstances = {}
+local espBaseThread
+local function createBaseESP(plot, mainPart)
+    if baseEspInstances[plot.Name] then
+        baseEspInstances[plot.Name]:Destroy()
+    end
+    local billboard = Instance.new("BillboardGui")
+    billboard.Name = "rznnq" .. plot.Name
+    billboard.Size = UDim2.new(0, 50, 0, 25)
+    billboard.StudsOffset = Vector3.new(0, 5, 0)
+    billboard.AlwaysOnTop = true
+    billboard.Adornee = mainPart
+    billboard.MaxDistance = 1000
+    billboard.Parent = plot
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(1, 0, 1, 0)
+    label.BackgroundTransparency = 1
+    label.TextScaled = true
+    label.Font = Enum.Font.Arcade
+    label.TextColor3 = Color3.fromRGB(255, 255, 0)
+    label.TextStrokeTransparency = 0
+    label.TextStrokeColor3 = Color3.new(0, 0, 0)
+    label.Parent = billboard
+    baseEspInstances[plot.Name] = billboard
+    return billboard
+end
+local function updateBaseESP()
+    if not plotsFolder then return end
+
+    for _, plot in ipairs(plotsFolder:GetChildren()) do
+        local purchases = plot:FindFirstChild("Purchases")
+        local plotBlock = purchases and purchases:FindFirstChild("PlotBlock")
+        local mainPart = plotBlock and plotBlock:FindFirstChild("Main")
+        local billboard = baseEspInstances[plot.Name]
+
+        local timeLabel = mainPart
+            and mainPart:FindFirstChild("BillboardGui")
+            and mainPart.BillboardGui:FindFirstChild("RemainingTime")
+
+        if timeLabel and mainPart then
+            billboard = billboard or createBaseESP(plot, mainPart)
+            local label = billboard:FindFirstChildWhichIsA("TextLabel")
+            if label then
+                label.Text = timeLabel.Text
+            end
+        elseif billboard then
+            billboard:Destroy()
+            baseEspInstances[plot.Name] = nil
+        end
+    end
+end
+espBaseThread = RunService.RenderStepped:Connect(updateBaseESP)
