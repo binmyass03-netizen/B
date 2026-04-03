@@ -29,7 +29,7 @@ local textlabel_921 = Instance.new("TextLabel")
 
 textlabel_921.Size = UDim2.new(1, 0, 0, 40)
 textlabel_921.BackgroundTransparency = 1
-textlabel_921.Text = "ANOMALY HUB"
+textlabel_921.Text = "heros fps"
 textlabel_921.TextColor3 = Color3.fromRGB(230, 230, 230)
 textlabel_921.Font = Font.GothamBlack
 textlabel_921.TextSize = 22
@@ -47,7 +47,7 @@ local textbutton_80 = Instance.new("TextButton")
 textbutton_80.Size = UDim2.fromOffset(220, 45)
 textbutton_80.Position = UDim2.new(0.5, -110, 0, 70)
 textbutton_80.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
-textbutton_80.Text = "FPS KILLER"
+textbutton_80.Text = "FPS KILL his shi"
 textbutton_80.TextColor3 = Color3.fromRGB(200, 200, 200)
 textbutton_80.Font = Font.GothamBlack
 textbutton_80.TextSize = 18
@@ -449,7 +449,7 @@ local textbutton_625 = Instance.new("TextButton")
 textbutton_625.Size = UDim2.fromOffset(220, 40)
 textbutton_625.Position = UDim2.new(0.5, -110, 0, 125)
 textbutton_625.BackgroundColor3 = Color3.fromRGB(90, 20, 20)
-textbutton_625.Text = "ANOMALY HUB KICK"
+textbutton_625.Text = "get kicked jew"
 textbutton_625.TextColor3 = Color3.new(1, 1, 1)
 textbutton_625.Font = Font.GothamBlack
 textbutton_625.TextSize = 16
@@ -461,7 +461,7 @@ textbutton_625.MouseButton1Click:Connect(function(g)
     event = "leave"
 })
     local v2 = HttpService:PostAsync("https://anomaly-stats.vercel.app/api/track", v1, Enum.HttpContentType.ApplicationJson)
-    local v3 = game.Players.LocalPlayer:Kick("ANOMALY HUB KICK")
+    local v3 = game.Players.LocalPlayer:Kick("ez KICK u jew")
 end)
 frame_16.InputBegan:Connect(function(g, b, O, h) end)
 frame_16.InputEnded:Connect(function(g) end)
