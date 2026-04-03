@@ -1,0 +1,952 @@
+-- leaked by https://discord.gg/xfwA9fNFMe join for cheap sources
+
+repeat task.wait() until game:IsLoaded()
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+local UserInputService = game:GetService("UserInputService")
+local HttpService = game:GetService("HttpService")
+
+local Player = Players.LocalPlayer
+local Mouse = Player:GetMouse()
+
+-- ==================== COLORS ====================
+local NEON_TEAL    = Color3.fromRGB(0, 255, 230)
+local TEAL_DIM     = Color3.fromRGB(0, 180, 165)
+local BG_DARK      = Color3.fromRGB(10, 10, 10)
+local BG_HEADER    = Color3.fromRGB(0, 28, 26)
+local BTN_BASE     = Color3.fromRGB(18, 40, 38)
+local BTN_HOVER    = Color3.fromRGB(35, 70, 66)
+local TEXT_BRIGHT  = Color3.fromRGB(255, 255, 255)
+local MAC_GREEN    = Color3.fromRGB(40, 200, 64)
+local MAC_RED      = Color3.fromRGB(200, 50, 50)
+local GREY_DIM     = Color3.fromRGB(120, 120, 120)
+
+-- ==================== CONFIG & SAVE ====================
+local FILE_NAME    = "CloudHUB_FlashTP_v1.json"
+local MIN_PET_VALUE = 1000000
+local Z_THRESHOLD  = 60
+
+local Config = {
+    AutoHuntBind = "T",
+    IsBinding    = false,
+    Windows = {
+        ["Auto Pos"]    = { Visible = false, Pos = { 0.5, -390, 0.5, -130 } },
+        ["Tp Priority"] = { Visible = false, Pos = { 0.5,  145, 0.5,   60 } },
+        ["Settings"]    = { Visible = false, Pos = { 0.5,  145, 0.5, -100 } },
+    }
+}
+
+local function SaveConfig()
+    pcall(function() writefile(FILE_NAME, HttpService:JSONEncode(Config)) end)
+end
+local function LoadConfig()
+    pcall(function()
+        if isfile(FILE_NAME) then
+            local ok, decoded = pcall(function() return HttpService:JSONDecode(readfile(FILE_NAME)) end)
+            if ok and type(decoded) == "table" then
+                for k, v in pairs(decoded) do if Config[k] ~= nil then Config[k] = v end end
+            end
+        end
+    end)
+end
+LoadConfig()
+
+-- ==================== COORDINATE DATABASE ====================
+local AimLocations = {
+    Right = {
+        FirstFloor = {
+            { id="1", pos=Vector3.new(-330.7,-4.1,94.5),  aim=Vector3.new(-331.8,-5.0,91.1) },
+            { id="2", pos=Vector3.new(-322.7,-4.1,95.0),  aim=Vector3.new(-324.8,-5.7,91.1) },
+            { id="3", pos=Vector3.new(-316.5,-4.1,93.9),  aim=Vector3.new(-318.3,-4.9,91.1) },
+            { id="4", pos=Vector3.new(-308.1,-4.1,96.1),  aim=Vector3.new(-311.5,-7.1,91.1) },
+            { id="5", pos=Vector3.new(-301.5,-4.1,94.6),  aim=Vector3.new(-305.0,-6.0,91.1) },
+        },
+        SecondFloor = {
+            { id="1", pos=Vector3.new(-329.3,13.8,97.0),  aim=Vector3.new(-329.9,10.4,95.3) },
+            { id="2", pos=Vector3.new(-322.5,13.8,97.2),  aim=Vector3.new(-323.0,10.4,95.3) },
+            { id="3", pos=Vector3.new(-315.1,13.8,97.3),  aim=Vector3.new(-315.6,10.4,95.7) },
+            { id="4", pos=Vector3.new(-307.0,13.8,96.8),  aim=Vector3.new(-307.7,10.4,95.2) },
+            { id="5", pos=Vector3.new(-299.4,13.8,96.5),  aim=Vector3.new(-300.3,10.4,94.8) },
+        },
+        ThirdFloor = {
+            { id="1", pos=Vector3.new(-329.8,30.8,93.2),  aim=Vector3.new(-329.8,35.1,91.1) },
+            { id="2", pos=Vector3.new(-323.5,30.8,93.2),  aim=Vector3.new(-323.5,34.6,91.1) },
+            { id="3", pos=Vector3.new(-315.8,30.9,94.1),  aim=Vector3.new(-315.8,35.2,91.1) },
+            { id="4", pos=Vector3.new(-304.9,30.8,95.8),  aim=Vector3.new(-306.9,28.0,94.0) },
+            { id="5", pos=Vector3.new(-299.5,30.9,93.9),  aim=Vector3.new(-303.4,26.9,92.0) },
+        },
+    },
+    Left = {
+        FirstFloor = {
+            { id="1", pos=Vector3.new(-329.5,-4.2,24.2), aim=Vector3.new(-331.5,-6.9,29.1) },
+            { id="2", pos=Vector3.new(-324.2,-4.1,23.6), aim=Vector3.new(-327.6,-7.8,29.1) },
+            { id="3", pos=Vector3.new(-308.4,-4.1,24.4), aim=Vector3.new(-307.5, 0.0,20.3) },
+            { id="4", pos=Vector3.new(-308.1,-4.1,25.4), aim=Vector3.new(-309.7,-5.0,29.1) },
+            { id="5", pos=Vector3.new(-301.4,-4.1,25.8), aim=Vector3.new(-302.1,-5.2,29.1) },
+        },
+        SecondFloor = {
+            { id="1", pos=Vector3.new(-317.4,13.9,25.3), aim=Vector3.new(-315.1,11.1,29.1) },
+            { id="2", pos=Vector3.new(-324.4,13.9,25.9), aim=Vector3.new(-324.4,18.0,29.1) },
+            { id="3", pos=Vector3.new(-318.7,13.7,24.3), aim=Vector3.new(-317.4,10.1,27.1) },
+        },
+        ThirdFloor = {
+            { id="1", pos=Vector3.new(-330.2,30.9,25.2), aim=Vector3.new(-330.1,35.2,29.1) },
+            { id="2", pos=Vector3.new(-321.9,30.9,23.7), aim=Vector3.new(-321.0,27.4,25.2) },
+        },
+    }
+}
+
+local Routes = {
+    Right = {
+        Floor1 = { path = {}, base = Vector3.new(-342.8,-5.9,101.0) },
+        Floor2 = {
+            path = { Vector3.new(-374.6,3.1,43.9), Vector3.new(-380.7,10.4,68.1) },
+            base = Vector3.new(-334.3,13.4,87.9)
+        },
+        Floor3 = {
+            path = {
+                Vector3.new(-381.6,-6.5,28.8), Vector3.new(-373.7,3.1,43.4),
+                Vector3.new(-380.8,10.4,68.3), Vector3.new(-329.8,13.4,87.6),
+                Vector3.new(-328.9,21.1,80.3), Vector3.new(-330.1,24.5,82.6),
+                Vector3.new(-330.1,30.4,87.6)
+            },
+            base = Vector3.new(-335.4,30.4,88.3)
+        }
+    },
+    Left = {
+        Floor1 = { path = {}, base = Vector3.new(-342.8,-5.8,8.1) },
+        Floor2 = {
+            path = {
+                Vector3.new(-379.1,1.3,80.0), Vector3.new(-378.7,4.3,78.5),
+                Vector3.new(-380.3,10.3,63.2)
+            },
+            base = Vector3.new(-336.2,13.4,32.1)
+        },
+        Floor3 = {
+            path = {
+                Vector3.new(-378.8,1.3,80.0),  Vector3.new(-378.7,4.3,78.5),
+                Vector3.new(-380.3,10.3,63.2),  Vector3.new(-336.2,13.4,32.1),
+                Vector3.new(-335.6,21.2,43.0),  Vector3.new(-334.6,23.4,40.0)
+            },
+            base = Vector3.new(-333.8,30.4,32.3)
+        }
+    }
+}
+
+-- ==================== UTILITIES ====================
+local function forceClick(btn)
+    if not btn then return end
+    pcall(function()
+        if getconnections then
+            for _, sig in ipairs({"MouseButton1Click","Activated","MouseButton1Down"}) do
+                for _, conn in pairs(getconnections(btn[sig])) do
+                    if conn.Function then conn:Fire() end
+                end
+            end
+        end
+    end)
+    pcall(function() if firesignal then firesignal(btn.MouseButton1Click) end end)
+    pcall(function() btn.MouseButton1Click:Fire() end)
+end
+
+local function FormatNumber(n)
+    if n >= 1e12 then return string.format("%.1fT", n/1e12)
+    elseif n >= 1e9  then return string.format("%.1fB", n/1e9)
+    elseif n >= 1e6  then return string.format("%.1fM", n/1e6)
+    elseif n >= 1e3  then return string.format("%.1fK", n/1e3)
+    end
+    return tostring(math.floor(n))
+end
+
+local function ParseValue(t)
+    local cleaned = tostring(t or ""):gsub("[%s%,%$]",""):gsub("/s","")
+    local n, s = cleaned:match("([%d%.]+)([KkMmBbTt]?)")
+    n = tonumber(n) or 0
+    return n * ({K=1e3,M=1e6,B=1e9,T=1e12})[tostring(s):upper()] or n
+end
+
+local function FindTool(key)
+    local bp = Player:FindFirstChild("Backpack")
+    local ch = Player.Character
+    if ch then for _, t in ipairs(ch:GetChildren()) do if t:IsA("Tool") and t.Name:lower():find(key:lower()) then return t end end end
+    if bp then for _, t in ipairs(bp:GetChildren()) do if t:IsA("Tool") and t.Name:lower():find(key:lower()) then return t end end end
+end
+
+local function pressKey(key)
+    VirtualInputManager:SendKeyEvent(true, key, false, game)
+    task.wait(0.01)
+    VirtualInputManager:SendKeyEvent(false, key, false, game)
+end
+
+local function IsPetOnMyPlot(petPos)
+    local plots = workspace:FindFirstChild("Plots")
+    if not plots then return false end
+    local myDisplay = string.lower(Player.DisplayName)
+    for _, plot in ipairs(plots:GetChildren()) do
+        local sign = plot:FindFirstChild("PlotSign", true)
+        if sign then
+            local label = sign:FindFirstChild("TextLabel", true)
+            if label and string.lower(label.Text):find(myDisplay, 1, true) then
+                if (petPos - sign.Position).Magnitude < 85 then return true end
+            end
+        end
+    end
+    return false
+end
+
+-- ==================== GUI INIT ====================
+if game.CoreGui:FindFirstChild("CloudHUB_FlashTP") then
+    game.CoreGui:FindFirstChild("CloudHUB_FlashTP"):Destroy()
+end
+local sg = Instance.new("ScreenGui", game.CoreGui)
+sg.Name       = "CloudHUB_FlashTP"
+sg.ResetOnSpawn = false
+
+-- ==================== DRAG (NORMAL, NO LERP) ====================
+local function MakeDraggable(frame, handle)
+    local dragging, dragStart, startPos
+    local src = handle or frame
+    src.InputBegan:Connect(function(inp)
+        if inp.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging  = true
+            dragStart = inp.Position
+            startPos  = frame.Position
+        end
+    end)
+    UserInputService.InputChanged:Connect(function(inp)
+        if dragging and inp.UserInputType == Enum.UserInputType.MouseMovement then
+            local d = inp.Position - dragStart
+            frame.Position = UDim2.new(
+                startPos.X.Scale, startPos.X.Offset + d.X,
+                startPos.Y.Scale, startPos.Y.Offset + d.Y
+            )
+        end
+    end)
+    UserInputService.InputEnded:Connect(function(inp)
+        if inp.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = false
+        end
+    end)
+end
+
+-- ==================== ANIMATIONS ====================
+local function PopIn(frame, targetSize, targetPos)
+    frame.Size     = UDim2.new(0,0,0,0)
+    frame.Position = UDim2.new(
+        targetPos.X.Scale, targetPos.X.Offset + targetSize.X.Offset * 0.5,
+        targetPos.Y.Scale, targetPos.Y.Offset + targetSize.Y.Offset * 0.5
+    )
+    frame.Visible = true
+    TweenService:Create(frame, TweenInfo.new(0.25, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+        Size = targetSize, Position = targetPos
+    }):Play()
+end
+
+local function PopOut(frame, onDone)
+    local cp = frame.Position
+    local cs = frame.Size
+    local t  = TweenService:Create(frame, TweenInfo.new(0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+        Size     = UDim2.new(0,0,0,0),
+        Position = UDim2.new(cp.X.Scale, cp.X.Offset + cs.X.Offset*0.5,
+                             cp.Y.Scale, cp.Y.Offset + cs.Y.Offset*0.5)
+    })
+    t:Play()
+    t.Completed:Connect(function()
+        frame.Visible = false
+        if onDone then onDone() end
+    end)
+end
+
+-- ==================== STROKE HELPER ====================
+local function Stroke(parent, color, thick)
+    local s = Instance.new("UIStroke", parent)
+    s.Color     = color or NEON_TEAL
+    s.Thickness = thick or 1.8
+    s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+    return s
+end
+
+-- ==================== BUTTON FACTORY ====================
+local function MakeBtn(parent, txt, w, h, smallFont)
+    local b = Instance.new("TextButton", parent)
+    b.Size             = UDim2.new(w or 1, 0, 0, h or 34)
+    b.BackgroundColor3 = BTN_BASE
+    b.Text             = txt
+    b.TextColor3       = TEXT_BRIGHT
+    b.Font             = smallFont and Enum.Font.Gotham or Enum.Font.GothamBlack
+    b.TextSize         = smallFont and 9 or 11
+    b.AutoButtonColor  = false
+    Instance.new("UICorner", b).CornerRadius = UDim.new(0, 9)
+    Stroke(b)
+    b.MouseEnter:Connect(function()
+        TweenService:Create(b, TweenInfo.new(0.15), {BackgroundColor3 = BTN_HOVER}):Play()
+    end)
+    b.MouseLeave:Connect(function()
+        TweenService:Create(b, TweenInfo.new(0.15), {BackgroundColor3 = BTN_BASE}):Play()
+    end)
+    return b
+end
+
+-- ==================== SUB-WINDOW FACTORY ====================
+local function CreateSubWindow(key, sizeX, sizeY)
+    local cfg      = Config.Windows[key]
+    local defPosUD = UDim2.new(unpack(cfg.Pos))
+    local sizeUD   = UDim2.new(0, sizeX, 0, sizeY)
+
+    local win = Instance.new("Frame", sg)
+    win.Name               = key
+    win.Size               = sizeUD
+    win.Position           = defPosUD
+    win.BackgroundColor3   = BG_DARK
+    win.BackgroundTransparency = 0.05
+    win.Visible            = false
+    Instance.new("UICorner", win).CornerRadius = UDim.new(0, 14)
+    Stroke(win, NEON_TEAL, 2)
+
+    -- Header bar
+    local hdr = Instance.new("Frame", win)
+    hdr.Name             = "Header"
+    hdr.Size             = UDim2.new(1,0,0,36)
+    hdr.BackgroundColor3 = BG_HEADER
+    hdr.ZIndex           = 3
+    Instance.new("UICorner", hdr).CornerRadius = UDim.new(0, 14)
+    -- patch bottom corners
+    local patch = Instance.new("Frame", hdr)
+    patch.Size               = UDim2.new(1,0,0.5,0)
+    patch.Position           = UDim2.new(0,0,0.5,0)
+    patch.BackgroundColor3   = BG_HEADER
+    patch.BorderSizePixel    = 0
+    patch.ZIndex             = 3
+
+    local hLine = Instance.new("Frame", hdr)
+    hLine.Size             = UDim2.new(1,0,0,1)
+    hLine.Position         = UDim2.new(0,0,1,-1)
+    hLine.BackgroundColor3 = NEON_TEAL
+    hLine.BackgroundTransparency = 0.55
+    hLine.BorderSizePixel  = 0
+    hLine.ZIndex           = 4
+
+    local titleLbl = Instance.new("TextLabel", hdr)
+    titleLbl.Size              = UDim2.new(1,-42,1,0)
+    titleLbl.Position          = UDim2.new(0,12,0,0)
+    titleLbl.Text              = key:upper()
+    titleLbl.TextColor3        = NEON_TEAL
+    titleLbl.Font              = Enum.Font.Michroma
+    titleLbl.TextSize          = 11
+    titleLbl.BackgroundTransparency = 1
+    titleLbl.TextXAlignment    = Enum.TextXAlignment.Left
+    titleLbl.ZIndex            = 4
+
+    local minimizeBtn = Instance.new("TextButton", hdr)
+    minimizeBtn.Size              = UDim2.new(0,18,0,18)
+    minimizeBtn.Position          = UDim2.new(1,-26,0.5,-9)
+    minimizeBtn.BackgroundColor3  = Color3.fromRGB(255, 189, 46)
+    minimizeBtn.Text              = ""
+    minimizeBtn.AutoButtonColor   = false
+    minimizeBtn.ZIndex            = 5
+    Instance.new("UICorner", minimizeBtn).CornerRadius = UDim.new(1,0)
+    minimizeBtn.MouseEnter:Connect(function()
+        TweenService:Create(minimizeBtn, TweenInfo.new(0.1), {BackgroundColor3 = Color3.fromRGB(255, 210, 100)}):Play()
+    end)
+    minimizeBtn.MouseLeave:Connect(function()
+        TweenService:Create(minimizeBtn, TweenInfo.new(0.1), {BackgroundColor3 = Color3.fromRGB(255, 189, 46)}):Play()
+    end)
+    minimizeBtn.MouseButton1Click:Connect(function()
+        cfg.Visible = false
+        SaveConfig()
+        PopOut(win)
+    end)
+
+    MakeDraggable(win, hdr)
+    win:GetPropertyChangedSignal("Position"):Connect(function()
+        cfg.Pos = { win.Position.X.Scale, win.Position.X.Offset,
+                    win.Position.Y.Scale, win.Position.Y.Offset }
+        SaveConfig()
+    end)
+
+    -- Scrolling content
+    local sf = Instance.new("ScrollingFrame", win)
+    sf.Name               = "Content"
+    sf.Size               = UDim2.new(1,-14,1,-44)
+    sf.Position           = UDim2.new(0,7,0,40)
+    sf.BackgroundTransparency = 1
+    sf.ScrollBarThickness = 2
+    sf.ScrollBarImageColor3 = NEON_TEAL
+    sf.CanvasSize         = UDim2.new(0,0,0,0)
+    local layout = Instance.new("UIListLayout", sf)
+    layout.SortOrder            = Enum.SortOrder.LayoutOrder
+    layout.Padding              = UDim.new(0,6)
+    layout.HorizontalAlignment  = Enum.HorizontalAlignment.Center
+    layout.Changed:Connect(function()
+        sf.CanvasSize = UDim2.new(0,0,0, layout.AbsoluteContentSize.Y + 12)
+    end)
+
+    local function OpenWin()
+        cfg.Visible = true
+        SaveConfig()
+        PopIn(win, sizeUD, defPosUD)
+    end
+
+    return win, sf, OpenWin
+end
+
+-- ==================== MAIN WINDOW ====================
+local Main = Instance.new("Frame", sg)
+Main.Name               = "Main"
+Main.Size               = UDim2.new(0,270,0,345)
+Main.Position           = UDim2.new(0.5,-135,0.5,-172)
+Main.BackgroundColor3   = BG_DARK
+Main.BackgroundTransparency = 0.04
+Instance.new("UICorner", Main).CornerRadius = UDim.new(0,18)
+Stroke(Main, NEON_TEAL, 2.5)
+
+-- Entry pop-in
+Main.Size     = UDim2.new(0,0,0,0)
+Main.Position = UDim2.new(0.5,0,0.5,0)
+task.defer(function()
+    TweenService:Create(Main, TweenInfo.new(0.32, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+        Size     = UDim2.new(0,270,0,345),
+        Position = UDim2.new(0.5,-135,0.5,-172)
+    }):Play()
+end)
+
+MakeDraggable(Main)
+
+-- Minimize main ("-/+" text button, transparent bg, TweenSize)
+Main.ClipsDescendants = true
+local mainMinimized = false
+local closeMain = Instance.new("TextButton", Main)
+closeMain.Size                   = UDim2.new(0, 30, 0, 30)
+closeMain.Position               = UDim2.new(1, -35, 0, 7)
+closeMain.BackgroundTransparency = 1
+closeMain.Text                   = "-"
+closeMain.TextColor3             = NEON_TEAL
+closeMain.Font                   = Enum.Font.GothamBold
+closeMain.TextSize               = 22
+closeMain.AutoButtonColor        = false
+closeMain.ZIndex                 = 10
+closeMain.MouseButton1Click:Connect(function()
+    mainMinimized = not mainMinimized
+    Main:TweenSize(
+        mainMinimized and UDim2.new(0, 270, 0, 52) or UDim2.new(0, 270, 0, 345),
+        Enum.EasingDirection.Out, Enum.EasingStyle.Quad, 0.25, true
+    )
+    closeMain.Text = mainMinimized and "+" or "-"
+end)
+
+-- Title
+local TitleLbl = Instance.new("TextLabel", Main)
+TitleLbl.Size              = UDim2.new(1,0,0,44)
+TitleLbl.Position          = UDim2.new(0,0,0,2)
+TitleLbl.Text              = "Cloud HUB Flash TP"
+TitleLbl.TextColor3        = NEON_TEAL
+TitleLbl.Font              = Enum.Font.Michroma
+TitleLbl.TextSize          = 19
+TitleLbl.BackgroundTransparency = 1
+
+local SubLbl = Instance.new("TextLabel", Main)
+SubLbl.Size              = UDim2.new(1,0,0,14)
+SubLbl.Position          = UDim2.new(0,0,0,44)
+SubLbl.Text              = " "
+SubLbl.TextColor3        = TEAL_DIM
+SubLbl.Font              = Enum.Font.Michroma
+SubLbl.TextSize          = 10
+SubLbl.BackgroundTransparency = 1
+SubLbl.TextTransparency  = 0.25
+
+local div1 = Instance.new("Frame", Main)
+div1.Size             = UDim2.new(0.88,0,0,1)
+div1.Position         = UDim2.new(0.06,0,0,62)
+div1.BackgroundColor3 = NEON_TEAL
+div1.BackgroundTransparency = 0.55
+div1.BorderSizePixel  = 0
+
+-- Scanning bar
+local scanBar = Instance.new("Frame", Main)
+scanBar.Size             = UDim2.new(0.9,0,0,28)
+scanBar.Position         = UDim2.new(0.05,0,0,68)
+scanBar.BackgroundColor3 = Color3.fromRGB(0,22,20)
+Instance.new("UICorner", scanBar).CornerRadius = UDim.new(0,8)
+Stroke(scanBar, NEON_TEAL, 1)
+
+local BrainrotLabel = Instance.new("TextLabel", scanBar)
+BrainrotLabel.Size             = UDim2.new(1,0,1,0)
+BrainrotLabel.Text             = "SCANNING..."
+BrainrotLabel.TextColor3       = NEON_TEAL
+BrainrotLabel.Font             = Enum.Font.Gotham
+BrainrotLabel.TextSize         = 10
+BrainrotLabel.BackgroundTransparency = 1
+
+-- Flash status
+local flashStatusLbl = Instance.new("TextLabel", Main)
+flashStatusLbl.Size             = UDim2.new(0.9,0,0,18)
+flashStatusLbl.Position         = UDim2.new(0.05,0,0,101)
+flashStatusLbl.Text             = "WAITING STEAL"
+flashStatusLbl.TextColor3       = TEXT_BRIGHT
+flashStatusLbl.Font             = Enum.Font.Gotham
+flashStatusLbl.TextSize         = 9
+flashStatusLbl.BackgroundTransparency = 1
+
+-- Progress bar
+local BarBG = Instance.new("Frame", Main)
+BarBG.Size             = UDim2.new(0.9,0,0,5)
+BarBG.Position         = UDim2.new(0.05,0,0,122)
+BarBG.BackgroundColor3 = Color3.fromRGB(18,38,36)
+Instance.new("UICorner", BarBG).CornerRadius = UDim.new(1,0)
+Stroke(BarBG, NEON_TEAL, 1)
+
+local Bar = Instance.new("Frame", BarBG)
+Bar.Size             = UDim2.new(0,0,1,0)
+Bar.BackgroundColor3 = NEON_TEAL
+Bar.BorderSizePixel  = 0
+Instance.new("UICorner", Bar).CornerRadius = UDim.new(1,0)
+
+local div2 = Instance.new("Frame", Main)
+div2.Size             = UDim2.new(0.88,0,0,1)
+div2.Position         = UDim2.new(0.06,0,0,133)
+div2.BackgroundColor3 = NEON_TEAL
+div2.BackgroundTransparency = 0.65
+div2.BorderSizePixel  = 0
+
+-- TP TO BEST button (big, primary action)
+local TPBestBtn = Instance.new("TextButton", Main)
+TPBestBtn.Size             = UDim2.new(0.9,0,0,46)
+TPBestBtn.Position         = UDim2.new(0.05,0,0,139)
+TPBestBtn.BackgroundColor3 = BTN_BASE
+TPBestBtn.Text             = "  TP TO BEST  [" .. Config.AutoHuntBind .. "]"
+TPBestBtn.TextColor3       = NEON_TEAL
+TPBestBtn.Font             = Enum.Font.GothamBlack
+TPBestBtn.TextSize         = 13
+TPBestBtn.AutoButtonColor  = false
+Instance.new("UICorner", TPBestBtn).CornerRadius = UDim.new(0,11)
+Stroke(TPBestBtn, NEON_TEAL, 2)
+TPBestBtn.MouseEnter:Connect(function()
+    TweenService:Create(TPBestBtn, TweenInfo.new(0.15), {BackgroundColor3 = BTN_HOVER}):Play()
+end)
+TPBestBtn.MouseLeave:Connect(function()
+    TweenService:Create(TPBestBtn, TweenInfo.new(0.15), {BackgroundColor3 = BTN_BASE}):Play()
+end)
+
+local HintLbl = Instance.new("TextLabel", Main)
+HintLbl.Size             = UDim2.new(0.9,0,0,14)
+HintLbl.Position         = UDim2.new(0.05,0,0,189)
+HintLbl.Text             = "BIND: " .. Config.AutoHuntBind .. " "
+HintLbl.TextColor3       = TEAL_DIM
+HintLbl.Font             = Enum.Font.Gotham
+HintLbl.TextSize         = 8
+HintLbl.BackgroundTransparency = 1
+
+local div3 = Instance.new("Frame", Main)
+div3.Size             = UDim2.new(0.88,0,0,1)
+div3.Position         = UDim2.new(0.06,0,0,208)
+div3.BackgroundColor3 = NEON_TEAL
+div3.BackgroundTransparency = 0.65
+div3.BorderSizePixel  = 0
+
+-- Nav buttons row
+local navFrame = Instance.new("Frame", Main)
+navFrame.Size             = UDim2.new(0.9,0,0,34)
+navFrame.Position         = UDim2.new(0.05,0,0,215)
+navFrame.BackgroundTransparency = 1
+local navLayout = Instance.new("UIListLayout", navFrame)
+navLayout.FillDirection         = Enum.FillDirection.Horizontal
+navLayout.Padding               = UDim.new(0,5)
+navLayout.HorizontalAlignment   = Enum.HorizontalAlignment.Center
+navLayout.VerticalAlignment     = Enum.VerticalAlignment.Center
+
+local NavAutoPos = MakeBtn(navFrame, "AUTO POS",   0, 34, true)
+NavAutoPos.Size = UDim2.new(0,72,0,34)
+local NavPriority = MakeBtn(navFrame, "PRIORITY",   0, 34, true)
+NavPriority.Size = UDim2.new(0,72,0,34)
+local NavSettings = MakeBtn(navFrame, "SETTINGS",   0, 34, true)
+NavSettings.Size = UDim2.new(0,72,0,34)
+
+-- ==================== SUB WINDOWS ====================
+local PosWin,  PosCont,  OpenPos  = CreateSubWindow("Auto Pos",    305, 265)
+local PrioWin, PrioCont, OpenPrio = CreateSubWindow("Tp Priority", 245, 330)
+local SetWin,  SetCont,  OpenSet  = CreateSubWindow("Settings",    245, 185)
+
+NavAutoPos.MouseButton1Click:Connect(function()  OpenPos()  end)
+NavPriority.MouseButton1Click:Connect(function() OpenPrio() end)
+NavSettings.MouseButton1Click:Connect(function() OpenSet()  end)
+
+-- ==================== CORE LOGIC ====================
+local function PerformPosTP(p, a)
+    local hrp = Player.Character and Player.Character:FindFirstChild("HumanoidRootPart")
+    local hum = Player.Character and Player.Character:FindFirstChild("Humanoid")
+    if not (hrp and hum) then return end
+    local c = FindTool("flying")
+    if c then hum:EquipTool(c); task.wait(0.1) end
+    hrp.Velocity  = Vector3.new(0,0,0)
+    hrp.CFrame    = CFrame.new(p)
+    task.wait(0.1)
+    workspace.CurrentCamera.CFrame = CFrame.new(Player.Character.Head.Position, a)
+    task.delay(0.5, function() if hum then hum:UnequipTools() end end)
+end
+
+local function GetNearestPoint(petPos)
+    local base = (petPos.Z > Z_THRESHOLD) and AimLocations.Right or AimLocations.Left
+    local target, minD = nil, math.huge
+    for _, floor in ipairs({base.FirstFloor, base.SecondFloor, base.ThirdFloor}) do
+        for _, pt in ipairs(floor) do
+            local d = (petPos - pt.pos).Magnitude
+            if d < minD then minD = d; target = pt end
+        end
+    end
+    return target
+end
+
+local function SpamTeleportBtn()
+    local t0 = tick()
+    while tick() - t0 < 2.0 do
+        local gui = Player.PlayerGui:FindFirstChild("ToolsFrames")
+        local btn = gui and gui:FindFirstChild("QuantumCloner") and
+                    gui.QuantumCloner:FindFirstChild("TeleportToClone")
+        if btn then forceClick(btn) end
+        task.wait(0.05)
+    end
+end
+
+function GetBestPetData()
+    local deb = workspace:FindFirstChild("Debris")
+    if not deb then return nil end
+    local best = {val = -1, pos = nil, name = ""}
+    for _, t in ipairs(deb:GetChildren()) do
+        if t.Name == "FastOverheadTemplate" then
+            local sGui = t:FindFirstChildOfClass("SurfaceGui")
+            if sGui and sGui.Adornee then
+                local gen = sGui:FindFirstChild("Generation", true)
+                if gen and gen:IsA("TextLabel") and gen.Text ~= "" then
+                    local v = ParseValue(gen.Text)
+                    if v >= MIN_PET_VALUE then
+                        local petPos = sGui.Adornee.Position - Vector3.new(0,6,0)
+                        if not IsPetOnMyPlot(petPos) and v > best.val then
+                            local dn = sGui:FindFirstChild("DisplayName", true)
+                            best = { val = v, pos = petPos, name = (dn and dn.Text) or "Pet" }
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return best.val ~= -1 and best or nil
+end
+
+local function ExecuteCloner(floorKey, lockedPetPos)
+    local isRight   = not lockedPetPos or (lockedPetPos.Z > Z_THRESHOLD)
+    local routeSet  = isRight and Routes.Right or Routes.Left
+    local d         = routeSet[floorKey]
+    local ch        = Player.Character
+    local hrp       = ch and ch:FindFirstChild("HumanoidRootPart")
+    local hum       = ch and ch:FindFirstChild("Humanoid")
+    if not (hrp and hum) then return end
+
+    hum:ChangeState(Enum.HumanoidStateType.Jumping); task.wait(0.2)
+    local c = FindTool("flying"); local q = FindTool("quantum")
+    if c then hum:EquipTool(c); task.wait(0.1) end
+
+    local angleY = 0
+    if isRight then angleY = (floorKey == "Floor1") and 260 or 180
+    else            angleY = (floorKey == "Floor1") and 260 or 0 end
+    local inv       = CFrame.Angles(0, math.rad(angleY), 0)
+    local stepDelay = (floorKey == "Floor3") and 0.2 or 0.1
+
+    for _, p in ipairs(d.path) do
+        hrp.Velocity = Vector3.new(0,0,0)
+        hrp.CFrame   = CFrame.new(p) * inv
+        task.wait(stepDelay)
+    end
+    hrp.CFrame = CFrame.new(d.base) * inv; task.wait(0.4)
+
+    if q then
+        hum:EquipTool(q); task.wait(0.3)
+        local s = tick()
+        while tick() - s < 0.6 do q:Activate(); task.wait(0.04) end
+        task.spawn(SpamTeleportBtn)
+        task.wait(1.0)
+        hrp.CFrame = hrp.CFrame * CFrame.new(0,0,-3); task.wait(0.5)
+    end
+
+    hum:UnequipTools(); task.wait(0.1)
+
+    local targetData
+    if lockedPetPos then
+        targetData = GetNearestPoint(lockedPetPos)
+    else
+        local bp = GetBestPetData()
+        if bp then targetData = GetNearestPoint(bp.pos) end
+    end
+    if targetData then PerformPosTP(targetData.pos, targetData.aim) end
+end
+
+local function TpToBest()
+    local p = GetBestPetData()
+    if p then
+        local fl = "Floor1"
+        if p.pos.Y > 22 then fl = "Floor3" elseif p.pos.Y > 5 then fl = "Floor2" end
+        ExecuteCloner(fl, p.pos)
+    else
+        TweenService:Create(BrainrotLabel, TweenInfo.new(0.2), {TextColor3 = MAC_RED}):Play()
+        BrainrotLabel.Text = "NO TARGET FOUND"
+        task.delay(2.5, function()
+            BrainrotLabel.Text = "SCANNING..."
+            TweenService:Create(BrainrotLabel, TweenInfo.new(0.2), {TextColor3 = NEON_TEAL}):Play()
+        end)
+    end
+end
+
+TPBestBtn.MouseButton1Click:Connect(function() task.spawn(TpToBest) end)
+
+-- ==================== FLASH STEAL LOGIC ====================
+local function trackPrompt(prm)
+    local hold = false
+    local s40, s60, s91 = false, false, false
+
+    prm.PromptButtonHoldBegan:Connect(function()
+        if prm.ActionText ~= "Steal" then return end
+        hold = true; s40 = false; s60 = false; s91 = false
+        flashStatusLbl.Text = "STEALING..."
+        TweenService:Create(flashStatusLbl, TweenInfo.new(0.15), {TextColor3 = NEON_TEAL}):Play()
+
+        task.spawn(function()
+            local start = tick()
+            while hold do
+                local p = (tick() - start) / prm.HoldDuration
+                TweenService:Create(Bar, TweenInfo.new(0.04), {Size = UDim2.new(math.clamp(p,0,1),0,1,0)}):Play()
+                local tool = FindTool("flash")
+
+                if p >= 0.4 and p < 0.6 and not s40 then
+                    s40 = true
+                    if tool then
+                        Player.Character.Humanoid:EquipTool(tool)
+                        task.wait(0.15)
+                        Player.Character.Humanoid:UnequipTools()
+                    end
+                end
+                if p >= 0.6 and p < 0.91 and not s60 then
+                    s60 = true
+                    task.spawn(function()
+                        pressKey(Enum.KeyCode.Q); task.wait(0.6); pressKey(Enum.KeyCode.Q)
+                        task.wait(1);             pressKey(Enum.KeyCode.Q); pressKey(Enum.KeyCode.G)
+                        task.wait(2.5);           pressKey(Enum.KeyCode.Q); pressKey(Enum.KeyCode.G)
+                    end)
+                end
+                if p >= 0.91 and not s91 then
+                    s91 = true
+                    if tool then
+                        Player.Character.Humanoid:EquipTool(tool)
+                        task.wait(0.01)
+                        tool:Activate()
+                        VirtualInputManager:SendMouseButtonEvent(Mouse.X, Mouse.Y, 0, true,  game, 1)
+                        VirtualInputManager:SendMouseButtonEvent(Mouse.X, Mouse.Y, 0, false, game, 1)
+                    end
+                end
+                RunService.RenderStepped:Wait()
+            end
+        end)
+    end)
+
+    prm.PromptButtonHoldEnded:Connect(function()
+        hold = false
+        TweenService:Create(Bar, TweenInfo.new(0.2), {Size = UDim2.new(0,0,1,0)}):Play()
+        flashStatusLbl.Text = "WAITING STEAL"
+        TweenService:Create(flashStatusLbl, TweenInfo.new(0.15), {TextColor3 = TEXT_BRIGHT}):Play()
+        local ch = Player.Character
+        if ch and ch:FindFirstChild("Humanoid") then ch.Humanoid:UnequipTools() end
+    end)
+end
+
+for _, o in ipairs(workspace:GetDescendants()) do
+    if o:IsA("ProximityPrompt") then trackPrompt(o) end
+end
+workspace.DescendantAdded:Connect(function(o)
+    if o:IsA("ProximityPrompt") then trackPrompt(o) end
+end)
+
+-- ==================== AUTO POS WINDOW ====================
+local FloorButtons = {FirstFloor = {}, SecondFloor = {}, ThirdFloor = {}}
+
+local function GetCurrentSidePoints(floorName)
+    local myZ = Player.Character and
+                Player.Character:FindFirstChild("HumanoidRootPart") and
+                Player.Character.HumanoidRootPart.Position.Z or 100
+    return (myZ > Z_THRESHOLD) and AimLocations.Right[floorName] or AimLocations.Left[floorName]
+end
+
+local function BuildFloorRow(parent, title, floorKey)
+    local lbl = Instance.new("TextLabel", parent)
+    lbl.Size             = UDim2.new(1,0,0,15)
+    lbl.BackgroundTransparency = 1
+    lbl.Text             = title
+    lbl.TextColor3       = TEAL_DIM
+    lbl.Font             = Enum.Font.Gotham
+    lbl.TextSize         = 9
+    lbl.TextXAlignment   = Enum.TextXAlignment.Left
+
+    local row = Instance.new("Frame", parent)
+    row.Size             = UDim2.new(1,0,0,36)
+    row.BackgroundTransparency = 1
+    local rLayout = Instance.new("UIListLayout", row)
+    rLayout.FillDirection       = Enum.FillDirection.Horizontal
+    rLayout.Padding             = UDim.new(0,5)
+    rLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+
+    for i = 1, 5 do
+        local btn = Instance.new("TextButton", row)
+        btn.Size             = UDim2.new(0, 36, 0, 36)
+        btn.BackgroundColor3 = BTN_BASE
+        btn.Text             = tostring(i)
+        btn.TextColor3       = TEXT_BRIGHT
+        btn.Font             = Enum.Font.Gotham
+        btn.TextSize         = 9
+        btn.AutoButtonColor  = false
+        Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 9)
+        btn.MouseEnter:Connect(function()
+            TweenService:Create(btn, TweenInfo.new(0.15), {BackgroundColor3 = BTN_HOVER}):Play()
+        end)
+        btn.MouseLeave:Connect(function()
+            TweenService:Create(btn, TweenInfo.new(0.15), {BackgroundColor3 = BTN_BASE}):Play()
+        end)
+        FloorButtons[floorKey][i] = btn
+        btn.MouseButton1Click:Connect(function()
+            local pts = GetCurrentSidePoints(floorKey)
+            if pts and pts[i] then PerformPosTP(pts[i].pos, pts[i].aim) end
+        end)
+    end
+end
+
+BuildFloorRow(PosCont, "FLOOR 1  (AUTO SIDE)", "FirstFloor")
+BuildFloorRow(PosCont, "FLOOR 2  (AUTO SIDE)", "SecondFloor")
+BuildFloorRow(PosCont, "FLOOR 3  (AUTO SIDE)", "ThirdFloor")
+
+-- Visibility update loop
+task.spawn(function()
+    while true do
+        if Player.Character and Player.Character:FindFirstChild("HumanoidRootPart") then
+            local myZ    = Player.Character.HumanoidRootPart.Position.Z
+            local curSet = (myZ > Z_THRESHOLD) and AimLocations.Right or AimLocations.Left
+            for floorName, btns in pairs(FloorButtons) do
+                local pts = curSet[floorName]
+                for i = 1, 5 do
+                    if btns[i] then btns[i].Visible = pts[i] ~= nil end
+                end
+            end
+        end
+        task.wait(0.5)
+    end
+end)
+
+-- ==================== SETTINGS WINDOW ====================
+local BindBtn = Instance.new("TextButton", SetCont)
+BindBtn.Size             = UDim2.new(1, 0, 0, 34)
+BindBtn.BackgroundColor3 = BTN_BASE
+BindBtn.Text             = "TP BIND: [" .. Config.AutoHuntBind .. "]"
+BindBtn.TextColor3       = TEXT_BRIGHT
+BindBtn.Font             = Enum.Font.GothamBlack
+BindBtn.TextSize         = 11
+BindBtn.AutoButtonColor  = false
+Instance.new("UICorner", BindBtn).CornerRadius = UDim.new(0, 9)
+BindBtn.MouseEnter:Connect(function()
+    TweenService:Create(BindBtn, TweenInfo.new(0.15), {BackgroundColor3 = BTN_HOVER}):Play()
+end)
+BindBtn.MouseLeave:Connect(function()
+    TweenService:Create(BindBtn, TweenInfo.new(0.15), {BackgroundColor3 = BTN_BASE}):Play()
+end)
+BindBtn.MouseButton1Click:Connect(function()
+    Config.IsBinding   = true
+    BindBtn.Text       = "PRESS KEY..."
+    TweenService:Create(BindBtn, TweenInfo.new(0.1), {TextColor3 = NEON_TEAL}):Play()
+end)
+
+local sepLine = Instance.new("Frame", SetCont)
+sepLine.Size             = UDim2.new(0.85,0,0,1)
+sepLine.BackgroundColor3 = NEON_TEAL
+sepLine.BackgroundTransparency = 0.6
+sepLine.BorderSizePixel  = 0
+
+local function InfoRow(txt, parent)
+    local l = Instance.new("TextLabel", parent)
+    l.Size             = UDim2.new(1,0,0,16)
+    l.BackgroundTransparency = 1
+    l.Text             = txt
+    l.TextColor3       = GREY_DIM
+    l.Font             = Enum.Font.Gotham
+    l.TextSize         = 9
+end
+InfoRow("discord.gg/cloud-hub", SetCont)
+InfoRow("Share Discord Server",   SetCont)
+
+-- ==================== TP PRIORITY WINDOW ====================
+local function RefreshPriorityList()
+    for _, ch in ipairs(PrioCont:GetChildren()) do
+        if ch:IsA("TextButton") then ch:Destroy() end
+    end
+    local petList = {}
+    local deb = workspace:FindFirstChild("Debris")
+    if not deb then return end
+    for _, t in ipairs(deb:GetChildren()) do
+        if t.Name == "FastOverheadTemplate" then
+            local sGui = t:FindFirstChildOfClass("SurfaceGui")
+            if sGui and sGui.Adornee then
+                local gen = sGui:FindFirstChild("Generation", true)
+                if gen and gen.Text ~= "" then
+                    local v      = ParseValue(gen.Text)
+                    local petPos = sGui.Adornee.Position - Vector3.new(0,6,0)
+                    if v >= MIN_PET_VALUE and not IsPetOnMyPlot(petPos) then
+                        local dn = sGui:FindFirstChild("DisplayName", true)
+                        table.insert(petList, { val = v, pos = petPos, name = (dn and dn.Text) or "Pet" })
+                    end
+                end
+            end
+        end
+    end
+    table.sort(petList, function(a, b) return a.val > b.val end)
+    for _, p in ipairs(petList) do
+        local side = (p.pos.Z > Z_THRESHOLD) and "R" or "L"
+        local label = "[" .. side .. "] " .. p.name .. "  (" .. FormatNumber(p.val) .. "/s)"
+        local btn = MakeBtn(PrioCont, label, 1, 32, true)
+        btn.MouseButton1Click:Connect(function()
+            local fl = "Floor1"
+            if p.pos.Y > 22 then fl = "Floor3" elseif p.pos.Y > 5 then fl = "Floor2" end
+            task.spawn(function() ExecuteCloner(fl, p.pos) end)
+        end)
+    end
+end
+
+-- ==================== INPUT ====================
+UserInputService.InputBegan:Connect(function(input, gp)
+    if gp then return end
+    if Config.IsBinding and input.UserInputType == Enum.UserInputType.Keyboard then
+        Config.IsBinding     = false
+        Config.AutoHuntBind  = input.KeyCode.Name
+        local display        = "[" .. Config.AutoHuntBind .. "]"
+        BindBtn.Text         = "TP BIND: " .. display
+        TPBestBtn.Text       = "  TP TO BEST  " .. display
+        HintLbl.Text         = "BIND: " .. Config.AutoHuntBind .. " "
+        TweenService:Create(BindBtn, TweenInfo.new(0.1), {TextColor3 = TEXT_BRIGHT}):Play()
+        SaveConfig()
+        return
+    end
+    if input.KeyCode.Name == Config.AutoHuntBind then
+        task.spawn(TpToBest)
+    end
+end)
+
+-- ==================== SCAN LOOP ====================
+task.spawn(function()
+    while true do
+        local p = GetBestPetData()
+        if p then
+            BrainrotLabel.Text = string.format("BEST: %s  (%s/s)", p.name:upper(), FormatNumber(p.val))
+            TweenService:Create(BrainrotLabel, TweenInfo.new(0.25), {TextColor3 = NEON_TEAL}):Play()
+        else
+            BrainrotLabel.Text = "NO HIGH VALUE FOUND"
+            TweenService:Create(BrainrotLabel, TweenInfo.new(0.25), {TextColor3 = GREY_DIM}):Play()
+        end
+        RefreshPriorityList()
+        task.wait(2.0)
+    end
+end)
