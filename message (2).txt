@@ -1,0 +1,360 @@
+-- project only femboys script
+-- giant potion or sum
+-- services
+local Players = game:GetService("Players")
+local ProximityPromptService = game:GetService("ProximityPromptService")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+local lp = Players.LocalPlayer
+
+-- anti double load
+if _G.FemboyLoaded then return end
+_G.FemboyLoaded = true
+
+-- fflags
+local fflags = {
+    GameNetPVHeaderRotationalVelocityZeroCutoffExponent = -5000,
+    LargeReplicatorWrite5 = true,
+    LargeReplicatorEnabled9 = true,
+    AngularVelociryLimit = 360,
+    TimestepArbiterVelocityCriteriaThresholdTwoDt = 2147483646,
+    S2PhysicsSenderRate = 15000,
+    DisableDPIScale = true,
+    MaxDataPacketPerSend = 2147483647,
+    PhysicsSenderMaxBandwidthBps = 20000,
+    TimestepArbiterHumanoidLinearVelThreshold = 21,
+    MaxMissedWorldStepsRemembered = -2147483648,
+    PlayerHumanoidPropertyUpdateRestrict = true,
+    SimDefaultHumanoidTimestepMultiplier = 0,
+    StreamJobNOUVolumeLengthCap = 2147483647,
+    DebugSendDistInSteps = -2147483648,
+    GameNetDontSendRedundantNumTimes = 1,
+    CheckPVLinearVelocityIntegrateVsDeltaPositionThresholdPercent = 1,
+    CheckPVDifferencesForInterpolationMinVelThresholdStudsPerSecHundredth = 1,
+    LargeReplicatorSerializeRead3 = true,
+    ReplicationFocusNouExtentsSizeCutoffForPauseStuds = 2147483647,
+    CheckPVCachedVelThresholdPercent = 10,
+    CheckPVDifferencesForInterpolationMinRotVelThresholdRadsPerSecHundredth = 1,
+    GameNetDontSendRedundantDeltaPositionMillionth = 1,
+    InterpolationFrameVelocityThresholdMillionth = 5,
+    StreamJobNOUVolumeCap = 2147483647,
+    InterpolationFrameRotVelocityThresholdMillionth = 5,
+    CheckPVCachedRotVelThresholdPercent = 10,
+    WorldStepMax = 30,
+    InterpolationFramePositionThresholdMillionth = 5,
+    TimestepArbiterHumanoidTurningVelThreshold = 1,
+    SimOwnedNOUCountThresholdMillionth = 2147483647,
+    GameNetPVHeaderLinearVelocityZeroCutoffExponent = -5000,
+    NextGenReplicatorEnabledWrite4 = true,
+    TimestepArbiterOmegaThou = 1073741823,
+    MaxAcceptableUpdateDelay = 1,
+    LargeReplicatorSerializeWrite4 = true
+}
+
+local function setfflags()
+    for k, v in pairs(fflags) do
+        pcall(function()
+            setfflag(k, tostring(v))
+        end)
+    end
+end
+
+-- desync respawn
+local function forceRespawn()
+    local char = lp.Character
+    if not char then return end
+
+    local humanoid = char:FindFirstChildOfClass("Humanoid")
+    if humanoid then
+        humanoid:ChangeState(Enum.HumanoidStateType.Dead)
+    end
+
+    char:ClearAllChildren()
+
+    local dummy = Instance.new("Model")
+    dummy.Parent = Workspace
+    lp.Character = dummy
+    task.wait()
+    lp.Character = char
+    dummy:Destroy()
+end
+
+-- main ui
+local sg = Instance.new("ScreenGui")
+sg.Parent = lp.PlayerGui
+sg.ResetOnSpawn = false
+
+local main = Instance.new("Frame", sg)
+main.Size = UDim2.fromOffset(260, 320)
+main.Position = UDim2.fromScale(0.5, 0.5)
+main.AnchorPoint = Vector2.new(0.5, 0.5)
+main.BackgroundColor3 = Color3.fromRGB(10, 12, 20)
+main.Active = true
+main.Draggable = true
+Instance.new("UICorner", main).CornerRadius = UDim.new(0, 10)
+
+local grad = Instance.new("UIGradient", main)
+grad.Color = ColorSequence.new{
+    ColorSequenceKeypoint.new(0,   Color3.fromRGB(18, 25, 45)),
+    ColorSequenceKeypoint.new(0.5, Color3.fromRGB(12, 18, 35)),
+    ColorSequenceKeypoint.new(1,   Color3.fromRGB(8, 10, 18))
+}
+grad.Rotation = 135
+
+local title = Instance.new("TextLabel", main)
+title.Size = UDim2.new(1, -30, 0, 60)
+title.Position = UDim2.fromOffset(15, 30)
+title.BackgroundTransparency = 1
+title.Text = "only femboys bypasses cracked script"
+title.Font = Enum.Font.GothamBlack
+title.TextSize = 42
+title.TextColor3 = Color3.fromRGB(80, 255, 240)
+title.TextXAlignment = Enum.TextXAlignment.Center
+
+local tstroke = Instance.new("UIStroke", title)
+tstroke.Color = Color3.fromRGB(220, 80, 255)
+tstroke.Thickness = 1.4
+tstroke.Transparency = 0.35
+
+local stat = Instance.new("TextLabel", main)
+stat.Size = UDim2.new(1, -30, 0, 22)
+stat.Position = UDim2.fromOffset(15, 105)
+stat.BackgroundTransparency = 1
+stat.Text = "Status: Ready"
+stat.Font = Enum.Font.GothamMedium
+stat.TextSize = 14
+stat.TextColor3 = Color3.fromRGB(140, 240, 220)
+stat.TextXAlignment = Enum.TextXAlignment.Center
+
+-- button maker
+local function btn(txt, y)
+    local b = Instance.new("TextButton", main)
+    b.Size = UDim2.new(1, -50, 0, 44)
+    b.Position = UDim2.fromOffset(25, y)
+    b.Text = txt
+    b.Font = Enum.Font.GothamSemibold
+    b.TextSize = 15
+    b.TextColor3 = Color3.fromRGB(200, 255, 240)
+    b.BackgroundColor3 = Color3.fromRGB(18, 20, 28)
+    b.AutoButtonColor = false
+    Instance.new("UICorner", b).CornerRadius = UDim.new(0, 8)
+
+    local s = Instance.new("UIStroke", b)
+    s.Color = Color3.fromRGB(80, 255, 240)
+    s.Thickness = 1.1
+    s.Transparency = 0.55
+
+    b.MouseEnter:Connect(function()
+        TweenService:Create(b, TweenInfo.new(0.25), {BackgroundColor3 = Color3.fromRGB(28, 35, 50)}):Play()
+        TweenService:Create(s, TweenInfo.new(0.25), {Transparency = 0.25}):Play()
+    end)
+
+    b.MouseLeave:Connect(function()
+        TweenService:Create(b, TweenInfo.new(0.25), {BackgroundColor3 = Color3.fromRGB(18, 20, 28)}):Play()
+        TweenService:Create(s, TweenInfo.new(0.25), {Transparency = 0.55}):Play()
+    end)
+
+    return b
+end
+
+local setpos   = btn("SET POSITION", 145)
+local desync   = btn("ENABLE DESYNC", 200)
+local unwalk   = btn("UNWALK ANIM", 255)
+
+-- unwalk toggle
+local conn
+local active = false
+
+unwalk.MouseButton1Click:Connect(function()
+    local char = lp.Character
+    if not char then return end
+
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum then return end
+
+    local anim = hum:FindFirstChildWhichIsA("Animator")
+    if not anim then return end
+
+    if active then
+        if conn then conn:Disconnect() conn = nil end
+        stat.Text = "Status: Animations Restored"
+        unwalk.Text = "UNWALK ANIM"
+        active = false
+    else
+        if conn then conn:Disconnect() conn = nil end
+
+        conn = RunService.Heartbeat:Connect(function()
+            for _, track in pairs(anim:GetPlayingAnimationTracks()) do
+                track:Stop()
+                track:AdjustSpeed(0)
+            end
+        end)
+
+        stat.Text = "Status: All Animations Stopped"
+        unwalk.Text = "RESTORE ANIM"
+        active = true
+    end
+end)
+
+-- target positions
+local targets = {
+    Vector3.new(-481.88, -3.79, 138.02),
+    Vector3.new(-481.75, -3.79, 89.18),
+    Vector3.new(-481.82, -3.79, 30.95),
+    Vector3.new(-481.75, -3.79, -17.79),
+    Vector3.new(-481.80, -3.79, -76.06),
+    Vector3.new(-481.72, -3.79, -124.70),
+    Vector3.new(-337.45, -3.85, -124.72),
+    Vector3.new(-337.37, -3.85, -76.07),
+    Vector3.new(-337.46, -3.79, -17.72),
+    Vector3.new(-337.41, -3.79, 30.92),
+    Vector3.new(-337.32, -3.79, 89.02),
+    Vector3.new(-337.27, -3.79, 137.90),
+    Vector3.new(-337.45, -3.79, 196.29),
+    Vector3.new(-337.37, -3.79, 244.91),
+    Vector3.new(-481.72, -3.79, 196.21),
+    Vector3.new(-481.76, -3.79, 244.92)
+}
+
+-- base zones
+local bases = {
+    Base1 = {
+        Vector3.new(-335.65, -5.40, -10.99),
+        Vector3.new(-336.05, -5.34, 18.08)
+    },
+    Base2 = {
+        Vector3.new(-335.41, -5.40, 102.42),
+        Vector3.new(-334.89, -5.40, 125.81)
+    }
+}
+local currentBase = nil
+
+local function isOnBase(pos)
+    local root = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
+    return root and (root.Position - pos).Magnitude <= 5
+end
+
+task.spawn(function()
+    while task.wait(0.4) do
+        currentBase = nil
+        for name, spots in pairs(bases) do
+            for _, spot in ipairs(spots) do
+                if isOnBase(spot) then
+                    currentBase = name
+                    stat.Text = "Status: " .. name .. " Locked"
+                    break
+                end
+            end
+            if currentBase then break end
+        end
+        if not currentBase then
+            stat.Text = "Status: Ready"
+        end
+    end
+end)
+
+-- beams
+local posA, posB
+local beamA, beamB
+local partA, partB
+
+local function makeBeam(targetPos, slot)
+    local root = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
+    if not root then return end
+
+    local anchor = Instance.new("Part")
+    anchor.Anchored = true
+    anchor.CanCollide = false
+    anchor.Transparency = 1
+    anchor.CFrame = CFrame.new(targetPos)
+    anchor.Parent = Workspace
+
+    local att0 = Instance.new("Attachment", anchor)
+    local att1 = Instance.new("Attachment", root)
+
+    local b = Instance.new("Beam")
+    b.Attachment0 = att0
+    b.Attachment1 = att1
+    b.Width0 = 0.65
+    b.Width1 = 0.65
+    b.FaceCamera = true
+    b.LightEmission = 0.95
+    b.Color = ColorSequence.new{
+        ColorSequenceKeypoint.new(0,   Color3.fromRGB(80, 255, 240)),
+        ColorSequenceKeypoint.new(0.5, Color3.fromRGB(220, 80, 255)),
+        ColorSequenceKeypoint.new(1,   Color3.fromRGB(80, 255, 240))
+    }
+    b.Transparency = NumberSequence.new{
+        NumberSequenceKeypoint.new(0, 0.35),
+        NumberSequenceKeypoint.new(0.5, 0.1),
+        NumberSequenceKeypoint.new(1, 0.35)
+    }
+    b.Parent = Workspace
+
+    if slot == 1 then
+        if beamA then beamA:Destroy() end
+        if partA then partA:Destroy() end
+        beamA, partA = b, anchor
+    else
+        if beamB then beamB:Destroy() end
+        if partB then partB:Destroy() end
+        beamB, partB = b, anchor
+    end
+end
+
+-- buttons
+setpos.MouseButton1Click:Connect(function()
+    local root = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
+    if not root then return end
+    posA = root.CFrame
+    makeBeam(posA.Position, 1)
+    stat.Text = "Status: Return Position Set"
+end)
+
+desync.MouseButton1Click:Connect(function()
+    setfflags()
+    forceRespawn()
+    stat.Text = "Status: Desync Enabled"
+end)
+
+-- auto target closest
+task.spawn(function()
+    while task.wait(1) do
+        local root = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
+        if not root then continue end
+
+        local best, bestDist = nil, math.huge
+        for _, p in ipairs(targets) do
+            if currentBase == "Base1" and p.Z > 60 then continue end
+            if currentBase == "Base2" and p.Z < 60 then continue end
+
+            local dist = (root.Position - p).Magnitude
+            if dist < bestDist then
+                bestDist = dist
+                best = p
+            end
+        end
+
+        if best then
+            posB = CFrame.new(best)
+            makeBeam(best, 2)
+        end
+    end
+end)
+
+-- steal tp
+ProximityPromptService.PromptButtonHoldEnded:Connect(function(prompt, sender)
+    if sender ~= lp then return end
+    if prompt.Name ~= "Steal" and prompt.ActionText ~= "Steal" then return end
+
+    local root = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
+    if not root then return end
+
+    if posA then root.CFrame = posA end
+    if posB then task.wait(0.05) root.CFrame = posB end
+
+    stat.Text = "Status: Steal Executed"
+end)
+textfile (3).txt
+12 Ko
