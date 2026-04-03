@@ -1340,3 +1340,171 @@ local function updateBaseESP()
     end
 end
 espBaseThread = RunService.RenderStepped:Connect(updateBaseESP)
+                   EZ DESYNC 
+-- David Hub - Updated UI & Name
+local Players = game:GetService('Players')
+local UserInputService = game:GetService('UserInputService')
+local TweenService = game:GetService('TweenService')
+local RunService = game:GetService('RunService')
+local CoreGui = game:GetService('CoreGui')
+local LocalPlayer = Players.LocalPlayer
+
+-- GUI Setup
+local screengui = Instance.new("ScreenGui")
+screengui.Name = "DavidHubGui"
+screengui.ResetOnSpawn = false
+screengui.IgnoreGuiInset = true
+screengui.Parent = CoreGui
+
+local frame = Instance.new("Frame")
+frame.Size = UDim2.new(0, 180, 0, 200)
+frame.Position = UDim2.new(0.5, -90, 0.5, -100)
+frame.BackgroundColor3 = Color3.fromRGB(10, 10, 12)
+frame.BorderSizePixel = 0
+frame.Active = true
+frame.Parent = screengui
+
+local frameCorner = Instance.new("UICorner")
+frameCorner.CornerRadius = UDim.new(0, 10)
+frameCorner.Parent = frame
+
+local frameStroke = Instance.new("UIStroke")
+frameStroke.Color = Color3.fromRGB(138, 43, 226) -- Violet Theme
+frameStroke.Thickness = 2
+frameStroke.Transparency = 0.2
+frameStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+frameStroke.Parent = frame
+
+local frameGradient = Instance.new("UIGradient")
+frameGradient.Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0, Color3.fromRGB(138, 43, 226)),
+    ColorSequenceKeypoint.new(1, Color3.fromRGB(75, 0, 130))
+})
+frameGradient.Parent = frameStroke
+
+-- Subtle pulse animation for the border
+TweenService:Create(frameStroke, TweenInfo.new(2, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true), {
+    Transparency = 0.5
+}):Play()
+
+-- Title Label
+local titleLabel = Instance.new("TextLabel")
+titleLabel.Size = UDim2.new(1, 0, 0, 40)
+titleLabel.Position = UDim2.new(0, 0, 0, 5)
+titleLabel.BackgroundTransparency = 1
+titleLabel.Text = "ez"
+titleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+titleLabel.Font = Enum.Font.GothamBold
+titleLabel.TextSize = 20
+titleLabel.Parent = frame
+
+-- Helper: create a styled button
+local function makeButton(text, yPos)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(0.85, 0, 0, 35)
+    btn.Position = UDim2.new(0.075, 0, 0, yPos)
+    btn.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
+    btn.TextColor3 = Color3.fromRGB(230, 230, 230)
+    btn.Font = Enum.Font.GothamMedium
+    btn.TextSize = 14
+    btn.Text = text
+    btn.AutoButtonColor = false
+    btn.Parent = frame
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 6)
+    corner.Parent = btn
+
+    local btnStroke = Instance.new("UIStroke")
+    btnStroke.Color = Color3.fromRGB(138, 43, 226)
+    btnStroke.Thickness = 1
+    btnStroke.Transparency = 0.6
+    btnStroke.Parent = btn
+
+    btn.MouseEnter:Connect(function()
+        TweenService:Create(btn, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(40, 40, 50)}):Play()
+        TweenService:Create(btnStroke, TweenInfo.new(0.2), {Transparency = 0}):Play()
+    end)
+    
+    btn.MouseLeave:Connect(function()
+        TweenService:Create(btn, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(25, 25, 30)}):Play()
+        TweenService:Create(btnStroke, TweenInfo.new(0.2), {Transparency = 0.6}):Play()
+    end)
+
+    return btn
+end
+
+local btnDesync = makeButton("DESYNC", 55)
+local btnUnwalk = makeButton("UNWALK", 100)
+local btnReset  = makeButton("RESET",  145)
+
+-- Dragging Logic
+local dragging, dragStart, startPos
+frame.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        dragging = true
+        dragStart = input.Position
+        startPos = frame.Position
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+        local delta = input.Position - dragStart
+        frame.Position = UDim2.new(
+            startPos.X.Scale, startPos.X.Offset + delta.X,
+            startPos.Y.Scale, startPos.Y.Offset + delta.Y
+        )
+    end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        dragging = false
+    end
+end)
+
+-- Original logic preserved
+btnDesync.Activated:Connect(function()
+    btnDesync.Text = "ERROR"
+    btnDesync.BackgroundColor3 = Color3.fromRGB(170, 50, 50)
+    task.wait(1)
+    btnDesync.Text = "DESYNC"
+    btnDesync.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
+end)
+
+btnUnwalk.Activated:Connect(function()
+    local char = LocalPlayer.Character
+    if not char then return end
+    local humanoid = char:FindFirstChildOfClass("Humanoid")
+    local animator = humanoid and humanoid:FindFirstChildOfClass("Animator")
+    if animator then
+        for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
+            track:Stop()
+        end
+        btnUnwalk.Text = "WALKED"
+        btnUnwalk.BackgroundColor3 = Color3.fromRGB(50, 120, 50)
+    end
+end)
+
+btnReset.Activated:Connect(function()
+    btnReset.Text = "RUNNING..."
+    local char = LocalPlayer.Character
+    if char then
+        local humanoid = char:FindFirstChildWhichIsA("Humanoid")
+        if humanoid then
+            humanoid.Health = 0
+        end
+    end
+    task.wait(1)
+    btnReset.Text = "RESET"
+end)
+
+LocalPlayer.CharacterAdded:Connect(function()
+    btnUnwalk.Text = "UNWALK"
+    btnUnwalk.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
+    btnDesync.Text = "DESYNC"
+    btnDesync.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
+end)
+
+print("David Hub loaded!")
