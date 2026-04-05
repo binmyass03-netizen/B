@@ -1,0 +1,1734 @@
+--[[
+    Brainrot Animation Controller - PODIUMS ONLY
+    
+    A collapsible and draggable popup to control animations on brainrots in your plot.
+    
+    Features:
+    - Control brainrots on your plot (click numbered buttons to select)
+    - SELECT ALL to control all animals at once
+    - Lists all available animations for the brainrot
+    - Play, stop any animation with looping
+    - Speed control slider
+    - Works with both real game animals AND client-spawned animals
+    - Auto-refresh with heartbeat (detects when animals change)
+    
+    Usage:
+    - Click the 🎬 toggle button (draggable) to open
+    - Click a numbered podium button to select that brainrot
+    - Or click "ALL" to select all brainrots
+    - Click any animation to play it
+]] -- ============================================================================
+-- PLACE CHECK
+-- ============================================================================
+local PLACE_ID = 109983668079237
+if game.PlaceId ~= PLACE_ID then
+    return
+end
+
+if not game:IsLoaded() then
+    game.Loaded:Wait()
+end
+
+task.spawn(function()
+    -- Services
+    local Players = game:GetService("Players")
+    local ReplicatedStorage = game:GetService("ReplicatedStorage")
+    local UserInputService = game:GetService("UserInputService")
+    local HttpService = game:GetService("HttpService")
+    local CollectionService = game:GetService("CollectionService")
+    local RunService = game:GetService("RunService")
+
+    local LocalPlayer = Players.LocalPlayer
+    if not LocalPlayer then
+        repeat
+            task.wait()
+        until Players.LocalPlayer
+        LocalPlayer = Players.LocalPlayer
+    end
+
+    -- Animal Models are in ReplicatedStorage.Models.Animals (for cloning)
+    -- Animations are in ReplicatedStorage.Animations.Animals
+    local Packages = ReplicatedStorage:WaitForChild("Packages", 10)
+    local Synchronizer = Packages and require(Packages.Synchronizer)
+    local AnimalsData = require(ReplicatedStorage.Datas.Animals)
+    local AnimalModels = ReplicatedStorage:WaitForChild("Models"):WaitForChild("Animals")
+    local AnimalAnimations = ReplicatedStorage:WaitForChild("Animations"):WaitForChild("Animals")
+    local RenderedMovingAnimals = workspace:WaitForChild("RenderedMovingAnimals")
+
+    -- Config files
+    local CONFIG_FILE = "workspace/AnimControllerConfig.json"
+    local TOGGLE_FILE = "workspace/AnimControllerToggle.json"
+
+    -- Colors
+    local BG_COLOR = Color3.fromRGB(25, 25, 30)
+    local ACCENT_COLOR = Color3.fromRGB(150, 100, 255)
+    local HEADER_COLOR = Color3.fromRGB(100, 70, 180)
+    local PODIUM_MODE_COLOR = Color3.fromRGB(150, 100, 255)
+
+    -- State
+    local mainUI = nil
+    local isCollapsed = false
+    local currentAnimalName = nil
+    local currentAnimator = nil
+    local currentModel = nil
+    local currentPlayingTrack = nil
+    local currentPlayingAnimName = nil
+    local animButtons = {}
+    local currentSpeed = 1.0 -- Speed multiplier for animations
+
+    -- Podium mode state
+    local currentPodiumIndex = nil
+    local podiumAnimators = {} -- For SELECT ALL
+    local isSelectAllMode = false
+
+    -- Utility
+    local function createCorner(parent, radius)
+        local c = Instance.new("UICorner")
+        c.CornerRadius = UDim.new(0, radius or 8)
+        c.Parent = parent
+        return c
+    end
+
+    local function createStroke(parent, color, thickness)
+        local s = Instance.new("UIStroke")
+        s.Color = color or ACCENT_COLOR
+        s.Thickness = thickness or 2
+        s.Parent = parent
+        return s
+    end
+
+    local function loadConfig(file)
+        local ok, result = pcall(function()
+            if isfile and isfile(file) then
+                local content = readfile(file)
+                print("[AnimController] Loaded config from", file, ":", content)
+                return HttpService:JSONDecode(content)
+            else
+                print("[AnimController] Config file not found:", file)
+            end
+        end)
+        if not ok then
+            print("[AnimController] Failed to load config:", result)
+        end
+        return ok and result or nil
+    end
+
+    local function saveConfig(file, data)
+        local ok, err = pcall(function()
+            if writefile then
+                local json = HttpService:JSONEncode(data)
+                writefile(file, json)
+                print("[AnimController] Saved config to", file, ":", json)
+            else
+                print("[AnimController] writefile not available!")
+            end
+        end)
+        if not ok then
+            print("[AnimController] Failed to save config:", err)
+        end
+    end
+
+    -- ============================================================================
+    -- PLOT DETECTION
+    -- ============================================================================
+    local function getMyPlot()
+        local plots = workspace:FindFirstChild("Plots")
+        if not plots then
+            return nil
+        end
+
+        -- Method 1: YourBase GUI enabled (most reliable)
+        for _, plot in ipairs(plots:GetChildren()) do
+            local plotSign = plot:FindFirstChild("PlotSign")
+            if plotSign then
+                local yourBase = plotSign:FindFirstChild("YourBase")
+                if yourBase and yourBase:IsA("BillboardGui") and yourBase.Enabled then
+                    return plot
+                end
+            end
+        end
+
+        -- Method 2: Fallback to Owner attribute (Name)
+        for _, plot in ipairs(plots:GetChildren()) do
+            local owner = plot:GetAttribute("Owner")
+            if owner == LocalPlayer.Name then
+                return plot
+            end
+        end
+
+        return nil
+    end
+
+    local function getPlotChannel()
+        local plot = getMyPlot()
+        if not plot then
+            return nil
+        end
+        local channel
+        pcall(function()
+            channel = Synchronizer:Wait(plot.Name)
+        end)
+        return channel
+    end
+
+    local function getPodiums()
+        local plot = getMyPlot()
+        if not plot then
+            return {}
+        end
+        local folder = plot:FindFirstChild("AnimalPodiums") or plot:FindFirstChild("Podiums")
+        if not folder then
+            return {}
+        end
+        local podiums = {}
+        for _, child in ipairs(folder:GetChildren()) do
+            local num = tonumber(child.Name)
+            if num then
+                table.insert(podiums, {
+                    index = num,
+                    model = child
+                })
+            end
+        end
+        table.sort(podiums, function(a, b)
+            return a.index < b.index
+        end)
+        return podiums
+    end
+
+    -- Get model EXACTLY like game does:
+    -- PODIUM ANIMALS: PlotClient creates models parented to Plot, positioned at AnimalPodiums>[index]>Base>Spawn
+    -- The model NAME matches the animal Index (e.g. "Tralalero Tralala")
+    local function getAnimalOnPodium(podiumIndex)
+        local plot = getMyPlot()
+        if not plot then
+            return nil, nil
+        end
+
+        local channel = getPlotChannel()
+        if not channel then
+            return nil, nil
+        end
+
+        -- Get animal data from channel's AnimalList
+        local data
+        pcall(function()
+            data = channel:Get(string.format("AnimalList.%d", podiumIndex))
+        end)
+
+        if not data or data == "Empty" then
+            pcall(function()
+                local animalList = channel:Get("AnimalList")
+                if animalList and type(animalList) == "table" then
+                    data = animalList[podiumIndex] or animalList[tostring(podiumIndex)]
+                end
+            end)
+        end
+
+        if not data or data == "Empty" or type(data) ~= "table" or not data.Index then
+            return nil, nil
+        end
+
+        -- Get the podium spawn point position
+        local podiumsFolder = plot:FindFirstChild("AnimalPodiums") or plot:FindFirstChild("Podiums")
+        if not podiumsFolder then
+            return nil, data
+        end
+
+        local podiumFolder = podiumsFolder:FindFirstChild(tostring(podiumIndex))
+        if not podiumFolder then
+            return nil, data
+        end
+
+        local base = podiumFolder:FindFirstChild("Base")
+        local spawnPart = base and base:FindFirstChild("Spawn")
+        if not spawnPart then
+            return nil, data
+        end
+
+        local spawnPos = spawnPart.Position
+
+        -- GAME LOGIC: PlotClient parents the animal model DIRECTLY to the plot
+        -- The model's name matches the animal Index from AnimalList data
+        local model = nil
+        local closestDist = 15 -- Must be within 15 studs of spawn point
+
+        -- Check direct children of plot
+        for _, child in ipairs(plot:GetChildren()) do
+            if child:IsA("Model") and child.Name == data.Index then
+                local primary = child.PrimaryPart or child:FindFirstChildWhichIsA("BasePart")
+                if primary then
+                    local dist = (primary.Position - spawnPos).Magnitude
+                    if dist < closestDist then
+                        closestDist = dist
+                        model = child
+                    end
+                end
+            end
+        end
+
+        -- Fallback: search descendants if not found
+        if not model then
+            for _, child in ipairs(plot:GetDescendants()) do
+                if child:IsA("Model") and child.Name == data.Index then
+                    local primary = child.PrimaryPart or child:FindFirstChildWhichIsA("BasePart")
+                    if primary then
+                        local dist = (primary.Position - spawnPos).Magnitude
+                        if dist < closestDist then
+                            closestDist = dist
+                            model = child
+                        end
+                    end
+                end
+            end
+        end
+
+        return model, data
+    end
+
+    -- ============================================================================
+    -- ANIMATION FUNCTIONS
+    -- ============================================================================
+    local function getAvailableAnimations(animalName)
+        local folder = AnimalAnimations:FindFirstChild(animalName)
+        if not folder then
+            return {}
+        end
+        local anims = {}
+        for _, child in ipairs(folder:GetChildren()) do
+            if child:IsA("Animation") then
+                table.insert(anims, {
+                    name = child.Name,
+                    id = child.AnimationId
+                })
+            end
+        end
+        table.sort(anims, function(a, b)
+            if a.name == "Idle" then
+                return true
+            end
+            if b.name == "Idle" then
+                return false
+            end
+            return a.name < b.name
+        end)
+        return anims
+    end
+
+    local function setSpeed(speed)
+        -- Adjust speed of current playing track
+        if currentTrack then
+            pcall(function()
+                currentTrack:AdjustSpeed(speed)
+            end)
+        end
+        -- Also adjust for podium animators in SELECT ALL mode
+        for _, entry in ipairs(podiumAnimators) do
+            if entry.currentTrack then
+                pcall(function()
+                    entry.currentTrack:AdjustSpeed(speed)
+                end)
+            end
+        end
+    end
+
+    -- Track our custom animations and the original tracks we stopped
+    local currentTrack = nil
+    local savedOriginalTracks = {} -- Save game's tracks so we can restore them
+
+    local function playAnimation(animalName, animName, animator)
+        local targetAnimator = animator or currentAnimator
+        print("[AnimController] playAnimation:", animalName, animName, "animator:", targetAnimator and "OK" or "NIL")
+        if not targetAnimator then
+            warn("[AnimController] No animator!")
+            return false
+        end
+
+        local folder = AnimalAnimations:FindFirstChild(animalName)
+        if not folder then
+            warn("[AnimController] No animation folder for:", animalName)
+            return false
+        end
+
+        local anim = folder:FindFirstChild(animName)
+        if not anim then
+            warn("[AnimController] No animation:", animName, "for", animalName)
+            return false
+        end
+
+        local animatorKey = tostring(targetAnimator)
+
+        -- Stop our current custom track if playing
+        if currentTrack then
+            pcall(function()
+                currentTrack:Stop(0.2)
+            end)
+            currentTrack = nil
+        end
+
+        -- Save and stop all currently playing tracks (game's animations)
+        if not savedOriginalTracks[animatorKey] then
+            savedOriginalTracks[animatorKey] = {}
+            pcall(function()
+                for _, track in ipairs(targetAnimator:GetPlayingAnimationTracks()) do
+                    table.insert(savedOriginalTracks[animatorKey], track)
+                    track:Stop(0.2)
+                end
+            end)
+        else
+            -- Already saved, just stop any playing
+            pcall(function()
+                for _, track in ipairs(targetAnimator:GetPlayingAnimationTracks()) do
+                    track:Stop(0.2)
+                end
+            end)
+        end
+
+        -- Load and play our animation
+        local track
+        local ok = pcall(function()
+            track = targetAnimator:LoadAnimation(anim)
+            track.Looped = true
+            track:Play(0.2)
+            track:AdjustSpeed(currentSpeed)
+        end)
+
+        if ok and track then
+            currentTrack = track
+            currentPlayingTrack = track
+            currentPlayingAnimName = animName
+            return true
+        end
+
+        warn("[AnimController] Failed to play animation")
+        return false
+    end
+
+    local function stopAllAnimations()
+        -- Stop our custom track (single mode)
+        if currentTrack then
+            pcall(function()
+                currentTrack:Stop(0.2)
+            end)
+            currentTrack = nil
+        end
+
+        -- Stop all currently playing tracks (game's or custom) for single mode
+        for animatorKey, tracks in pairs(savedOriginalTracks) do
+            for _, track in ipairs(tracks) do
+                pcall(function()
+                    track:Stop(0.2)
+                end)
+            end
+        end
+        savedOriginalTracks = {}
+
+        -- Stop all tracks for SELECT ALL mode (podiumAnimators)
+        for _, entry in ipairs(podiumAnimators) do
+            pcall(function()
+                -- Stop custom track
+                if entry.currentTrack then
+                    entry.currentTrack:Stop(0.2)
+                    entry.currentTrack = nil
+                end
+                -- Stop all saved original tracks
+                if entry.savedTracks then
+                    for _, track in ipairs(entry.savedTracks) do
+                        pcall(function()
+                            track:Stop(0.2)
+                        end)
+                    end
+                    entry.savedTracks = nil
+                end
+            end)
+        end
+
+        currentPlayingTrack = nil
+        currentPlayingAnimName = nil
+    end
+
+    local function setupAnimator(model)
+        if not model then
+            return nil
+        end
+
+        -- First check if model has a Humanoid with Animator (common pattern)
+        local humanoid = model:FindFirstChildOfClass("Humanoid")
+        if humanoid then
+            local animator = humanoid:FindFirstChildOfClass("Animator")
+            if animator then
+                return animator
+            end
+        end
+
+        -- Then check for AnimationController (alternate pattern)
+        local ac = model:FindFirstChildOfClass("AnimationController")
+        if ac then
+            local animator = ac:FindFirstChildOfClass("Animator")
+            if animator then
+                return animator
+            end
+            -- AnimationController exists but no Animator, create one
+            local ok, newAnim = pcall(function()
+                local a = Instance.new("Animator")
+                a.Parent = ac
+                return a
+            end)
+            if ok then
+                return newAnim
+            end
+        end
+
+        -- No existing animation setup, create AnimationController + Animator
+        local ok, newAC = pcall(function()
+            local c = Instance.new("AnimationController")
+            c.Parent = model
+            return c
+        end)
+        if not ok then
+            return nil
+        end
+        ac = newAC
+
+        local ok2, newAnim = pcall(function()
+            local a = Instance.new("Animator")
+            a.Parent = ac
+            return a
+        end)
+        if ok2 then
+            return newAnim
+        end
+
+        return nil
+    end
+
+    -- ============================================================================
+    -- PODIUM SELECTION FUNCTIONS
+    -- ============================================================================
+    local currentPodiumIndex = nil
+
+    local function selectPodium(podiumIndex, onSelectionMade)
+        -- Don't stop animations when just selecting - only reset our tracking
+        currentTrack = nil
+        savedOriginalTracks = {}
+        currentAnimator = nil
+        currentAnimalName = nil
+        currentPodiumIndex = podiumIndex
+        currentPlayingTrack = nil
+        currentPlayingAnimName = nil
+
+        if not podiumIndex then
+            return nil, nil
+        end
+
+        local model, data = getAnimalOnPodium(podiumIndex)
+
+        if model and data then
+            currentAnimalName = data.Index
+            currentAnimator = setupAnimator(model)
+            currentModel = model
+        end
+
+        if onSelectionMade then
+            onSelectionMade(model, data)
+        end
+        return model, data
+    end
+
+    local function podiumHasAnimal(podiumIndex)
+        local model, data = getAnimalOnPodium(podiumIndex)
+        return model ~= nil, model, data
+    end
+
+    local function stopPodiumSelection()
+        -- No-op now, kept for compatibility
+    end
+
+    -- Get all brainrots on player's plot (from Synchronizer data)
+    local function getBrainrotsOnMyPlot()
+        local results = {}
+        local channel = getPlotChannel()
+        if not channel then
+            return results
+        end
+
+        local animalList
+        pcall(function()
+            animalList = channel:Get("AnimalList")
+        end)
+
+        if not animalList or type(animalList) ~= "table" then
+            return results
+        end
+
+        local podiums = getPodiums()
+        for _, p in ipairs(podiums) do
+            local model, data = getAnimalOnPodium(p.index)
+            if data and data.Index and model then
+                table.insert(results, {
+                    podiumIndex = p.index,
+                    model = model,
+                    index = data.Index,
+                    mutation = data.Mutation,
+                    traits = data.Traits,
+                    displayName = AnimalsData[data.Index] and AnimalsData[data.Index].DisplayName or data.Index
+                })
+            end
+        end
+
+        return results
+    end
+
+    -- ============================================================================
+    -- MAIN UI
+    -- ============================================================================
+    local function createMainUI()
+        local playerGui = LocalPlayer:WaitForChild("PlayerGui")
+
+        local existing = playerGui:FindFirstChild("BrainrotAnimControllerGui")
+        if existing then
+            existing:Destroy()
+        end
+
+        local screenGui = Instance.new("ScreenGui")
+        screenGui.Name = "BrainrotAnimControllerGui"
+        screenGui.ResetOnSpawn = false
+        screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+        screenGui.Parent = playerGui
+
+        -- Main panel
+        local panel = Instance.new("Frame")
+        panel.Name = "MainPanel"
+        panel.Size = UDim2.new(0, 320, 0, 480)
+
+        local savedPos = loadConfig(CONFIG_FILE)
+        if savedPos and savedPos.X then
+            panel.Position = UDim2.new(0, savedPos.X, 0, savedPos.Y or 100)
+            isCollapsed = savedPos.Collapsed or false
+        else
+            local screenSize = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or
+                                   Vector2.new(1920, 1080)
+            panel.Position = UDim2.new(0, (screenSize.X - 320) / 2, 0, (screenSize.Y - 480) / 2)
+        end
+
+        panel.BackgroundColor3 = BG_COLOR
+        panel.BorderSizePixel = 0
+        panel.ZIndex = 300
+        panel.Parent = screenGui
+        createCorner(panel, 12)
+        createStroke(panel, PODIUM_MODE_COLOR, 3)
+
+        local panelStroke = panel:FindFirstChildOfClass("UIStroke")
+
+        -- Dragging
+        local dragging, dragStart, startPos = false, nil, nil
+        local dragConnection = nil
+
+        dragConnection = UserInputService.InputChanged:Connect(function(input)
+            if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+                local delta = input.Position - dragStart
+                panel.Position = UDim2.new(0, startPos.X + delta.X, 0, startPos.Y + delta.Y)
+            end
+        end)
+
+        -- Header
+        local header = Instance.new("Frame")
+        header.Size = UDim2.new(1, 0, 0, 40)
+        header.BackgroundColor3 = HEADER_COLOR
+        header.BorderSizePixel = 0
+        header.ZIndex = 301
+        header.Parent = panel
+        createCorner(header, 12)
+
+        local headerFix = Instance.new("Frame")
+        headerFix.Size = UDim2.new(1, 0, 0, 12)
+        headerFix.Position = UDim2.new(0, 0, 1, -12)
+        headerFix.BackgroundColor3 = HEADER_COLOR
+        headerFix.BorderSizePixel = 0
+        headerFix.ZIndex = 301
+        headerFix.Parent = header
+
+        header.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 then
+                dragging = true
+                dragStart = input.Position
+                startPos = panel.AbsolutePosition
+            end
+        end)
+        header.InputEnded:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 then
+                dragging = false
+                saveConfig(CONFIG_FILE, {
+                    X = panel.Position.X.Offset,
+                    Y = panel.Position.Y.Offset,
+                    Collapsed = isCollapsed
+                })
+            end
+        end)
+
+        local headerLabel = Instance.new("TextLabel")
+        headerLabel.Size = UDim2.new(1, -80, 1, 0)
+        headerLabel.Position = UDim2.new(0, 10, 0, 0)
+        headerLabel.BackgroundTransparency = 1
+        headerLabel.Text = "🎬 ANIM CONTROLLER"
+        headerLabel.TextColor3 = Color3.new(1, 1, 1)
+        headerLabel.TextSize = 15
+        headerLabel.Font = Enum.Font.GothamBlack
+        headerLabel.TextXAlignment = Enum.TextXAlignment.Left
+        headerLabel.ZIndex = 302
+        headerLabel.Parent = header
+
+        -- Collapse button
+        local collapseBtn = Instance.new("TextButton")
+        collapseBtn.Size = UDim2.new(0, 30, 0, 30)
+        collapseBtn.Position = UDim2.new(1, -70, 0.5, 0)
+        collapseBtn.AnchorPoint = Vector2.new(0, 0.5)
+        collapseBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 120)
+        collapseBtn.BorderSizePixel = 0
+        collapseBtn.Text = isCollapsed and "▼" or "▲"
+        collapseBtn.TextColor3 = Color3.new(1, 1, 1)
+        collapseBtn.TextSize = 16
+        collapseBtn.Font = Enum.Font.GothamBold
+        collapseBtn.ZIndex = 303
+        collapseBtn.Parent = header
+        createCorner(collapseBtn, 6)
+
+        -- Close button
+        local closeBtn = Instance.new("TextButton")
+        closeBtn.Size = UDim2.new(0, 30, 0, 30)
+        closeBtn.Position = UDim2.new(1, -35, 0.5, 0)
+        closeBtn.AnchorPoint = Vector2.new(0, 0.5)
+        closeBtn.BackgroundColor3 = Color3.fromRGB(200, 80, 80)
+        closeBtn.BorderSizePixel = 0
+        closeBtn.Text = "✕"
+        closeBtn.TextColor3 = Color3.new(1, 1, 1)
+        closeBtn.TextSize = 16
+        closeBtn.Font = Enum.Font.GothamBold
+        closeBtn.ZIndex = 303
+        closeBtn.Parent = header
+        createCorner(closeBtn, 6)
+
+        closeBtn.MouseButton1Click:Connect(function()
+            screenGui.Enabled = false
+        end)
+
+        -- Content
+        local content = Instance.new("Frame")
+        content.Name = "Content"
+        content.Size = UDim2.new(1, -16, 1, -56)
+        content.Position = UDim2.new(0.5, 0, 0, 48)
+        content.AnchorPoint = Vector2.new(0.5, 0)
+        content.BackgroundTransparency = 1
+        content.ZIndex = 301
+        content.Parent = panel
+
+        -- Collapse logic
+        local function updateCollapse()
+            content.Visible = not isCollapsed
+            collapseBtn.Text = isCollapsed and "▼" or "▲"
+            panel.Size = isCollapsed and UDim2.new(0, 320, 0, 48) or UDim2.new(0, 320, 0, 480)
+            saveConfig(CONFIG_FILE, {
+                X = panel.Position.X.Offset,
+                Y = panel.Position.Y.Offset,
+                Collapsed = isCollapsed
+            })
+        end
+
+        collapseBtn.MouseButton1Click:Connect(function()
+            isCollapsed = not isCollapsed
+            updateCollapse()
+        end)
+
+        -- Selection area for podiums
+        local selectionFrame = Instance.new("Frame")
+        selectionFrame.Size = UDim2.new(1, 0, 0, 70)
+        selectionFrame.Position = UDim2.new(0, 0, 0, 0)
+        selectionFrame.BackgroundColor3 = Color3.fromRGB(35, 35, 40)
+        selectionFrame.BorderSizePixel = 0
+        selectionFrame.ZIndex = 302
+        selectionFrame.Parent = content
+        createCorner(selectionFrame, 6)
+
+        -- PODIUMS: Numbered podium buttons in a scroll
+        local podiumLabel = Instance.new("TextLabel")
+        podiumLabel.Size = UDim2.new(0.6, 0, 0, 16)
+        podiumLabel.Position = UDim2.new(0, 4, 0, 2)
+        podiumLabel.BackgroundTransparency = 1
+        podiumLabel.Text = "📍 Select Podium:"
+        podiumLabel.TextColor3 = Color3.new(1, 1, 1)
+        podiumLabel.TextSize = 11
+        podiumLabel.Font = Enum.Font.GothamBold
+        podiumLabel.TextXAlignment = Enum.TextXAlignment.Left
+        podiumLabel.ZIndex = 303
+        podiumLabel.Parent = selectionFrame
+
+        -- SELECT ALL button for podiums
+        local podiumSelectAllBtn = Instance.new("TextButton")
+        podiumSelectAllBtn.Size = UDim2.new(0.35, -8, 0, 16)
+        podiumSelectAllBtn.Position = UDim2.new(0.65, 0, 0, 1)
+        podiumSelectAllBtn.BackgroundColor3 = Color3.fromRGB(150, 120, 50)
+        podiumSelectAllBtn.BorderSizePixel = 0
+        podiumSelectAllBtn.Text = "⭐ ALL"
+        podiumSelectAllBtn.TextColor3 = Color3.new(1, 1, 1)
+        podiumSelectAllBtn.TextSize = 10
+        podiumSelectAllBtn.Font = Enum.Font.GothamBold
+        podiumSelectAllBtn.ZIndex = 303
+        podiumSelectAllBtn.Parent = selectionFrame
+        createCorner(podiumSelectAllBtn, 4)
+
+        local podiumScroll = Instance.new("ScrollingFrame")
+        podiumScroll.Size = UDim2.new(1, -8, 0, 48)
+        podiumScroll.Position = UDim2.new(0, 4, 0, 18)
+        podiumScroll.BackgroundTransparency = 1
+        podiumScroll.ScrollBarThickness = 4
+        podiumScroll.ScrollBarImageColor3 = PODIUM_MODE_COLOR
+        podiumScroll.AutomaticCanvasSize = Enum.AutomaticSize.X
+        podiumScroll.ScrollingDirection = Enum.ScrollingDirection.X
+        podiumScroll.ZIndex = 303
+        podiumScroll.Parent = selectionFrame
+
+        local podiumLayout = Instance.new("UIListLayout")
+        podiumLayout.FillDirection = Enum.FillDirection.Horizontal
+        podiumLayout.Padding = UDim.new(0, 4)
+        podiumLayout.Parent = podiumScroll
+
+        local podiumPad = Instance.new("UIPadding")
+        podiumPad.PaddingLeft = UDim.new(0, 2)
+        podiumPad.PaddingTop = UDim.new(0, 2)
+        podiumPad.Parent = podiumScroll
+
+        -- Animal info label
+        local animalInfoLabel = Instance.new("TextLabel")
+        animalInfoLabel.Size = UDim2.new(1, 0, 0, 28)
+        animalInfoLabel.Position = UDim2.new(0, 0, 0, 76)
+        animalInfoLabel.BackgroundColor3 = Color3.fromRGB(35, 40, 50)
+        animalInfoLabel.Text = "No selection"
+        animalInfoLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
+        animalInfoLabel.TextSize = 13
+        animalInfoLabel.Font = Enum.Font.GothamBold
+        animalInfoLabel.ZIndex = 302
+        animalInfoLabel.Parent = content
+        createCorner(animalInfoLabel, 4)
+
+        -- Animation list
+        local animLabel = Instance.new("TextLabel")
+        animLabel.Size = UDim2.new(1, 0, 0, 20)
+        animLabel.Position = UDim2.new(0, 0, 0, 110)
+        animLabel.BackgroundTransparency = 1
+        animLabel.Text = "🎭 Animations:"
+        animLabel.TextColor3 = Color3.new(1, 1, 1)
+        animLabel.TextSize = 13
+        animLabel.Font = Enum.Font.GothamBold
+        animLabel.TextXAlignment = Enum.TextXAlignment.Left
+        animLabel.ZIndex = 302
+        animLabel.Parent = content
+
+        local animScroll = Instance.new("ScrollingFrame")
+        animScroll.Size = UDim2.new(1, 0, 0, 165)
+        animScroll.Position = UDim2.new(0, 0, 0, 132)
+        animScroll.BackgroundColor3 = Color3.fromRGB(35, 35, 40)
+        animScroll.BorderSizePixel = 0
+        animScroll.ScrollBarThickness = 6
+        animScroll.ScrollBarImageColor3 = ACCENT_COLOR
+        animScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+        animScroll.ZIndex = 302
+        animScroll.Parent = content
+        createCorner(animScroll, 6)
+
+        local animLayout = Instance.new("UIListLayout")
+        animLayout.SortOrder = Enum.SortOrder.LayoutOrder
+        animLayout.Padding = UDim.new(0, 4)
+        animLayout.Parent = animScroll
+
+        local animPad = Instance.new("UIPadding")
+        animPad.PaddingTop = UDim.new(0, 4)
+        animPad.PaddingLeft = UDim.new(0, 4)
+        animPad.PaddingRight = UDim.new(0, 4)
+        animPad.PaddingBottom = UDim.new(0, 4)
+        animPad.Parent = animScroll
+
+        -- Speed control
+        -- Stop button
+        local stopBtn = Instance.new("TextButton")
+        stopBtn.Size = UDim2.new(1, 0, 0, 32)
+        stopBtn.Position = UDim2.new(0, 0, 0, 303)
+        stopBtn.BackgroundColor3 = Color3.fromRGB(200, 80, 80)
+        stopBtn.BorderSizePixel = 0
+        stopBtn.Text = "⏹️ STOP ANIMATION"
+        stopBtn.TextColor3 = Color3.new(1, 1, 1)
+        stopBtn.TextSize = 13
+        stopBtn.Font = Enum.Font.GothamBold
+        stopBtn.ZIndex = 302
+        stopBtn.Parent = content
+        createCorner(stopBtn, 6)
+
+        stopBtn.MouseButton1Click:Connect(function()
+            stopAllAnimations()
+            for _, btn in pairs(animButtons) do
+                btn.BackgroundColor3 = Color3.fromRGB(60, 50, 80)
+            end
+        end)
+
+        -- Speed control frame
+        local speedFrame = Instance.new("Frame")
+        speedFrame.Size = UDim2.new(1, 0, 0, 40)
+        speedFrame.Position = UDim2.new(0, 0, 0, 340)
+        speedFrame.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
+        speedFrame.BorderSizePixel = 0
+        speedFrame.ZIndex = 302
+        speedFrame.Parent = content
+        createCorner(speedFrame, 6)
+
+        local speedLabel = Instance.new("TextLabel")
+        speedLabel.Size = UDim2.new(0, 55, 1, 0)
+        speedLabel.Position = UDim2.new(0, 8, 0, 0)
+        speedLabel.BackgroundTransparency = 1
+        speedLabel.Text = "Speed:"
+        speedLabel.TextColor3 = Color3.new(1, 1, 1)
+        speedLabel.TextSize = 12
+        speedLabel.Font = Enum.Font.GothamBold
+        speedLabel.TextXAlignment = Enum.TextXAlignment.Left
+        speedLabel.ZIndex = 303
+        speedLabel.Parent = speedFrame
+
+        local speedInput = Instance.new("TextBox")
+        speedInput.Size = UDim2.new(0, 60, 0, 28)
+        speedInput.Position = UDim2.new(0, 65, 0.5, 0)
+        speedInput.AnchorPoint = Vector2.new(0, 0.5)
+        speedInput.BackgroundColor3 = Color3.fromRGB(50, 50, 60)
+        speedInput.BorderSizePixel = 0
+        speedInput.Text = "1"
+        speedInput.TextColor3 = Color3.new(1, 1, 1)
+        speedInput.TextSize = 14
+        speedInput.Font = Enum.Font.GothamBold
+        speedInput.ZIndex = 303
+        speedInput.ClearTextOnFocus = false
+        speedInput.Parent = speedFrame
+        createCorner(speedInput, 4)
+
+        local speedApplyBtn = Instance.new("TextButton")
+        speedApplyBtn.Size = UDim2.new(0, 60, 0, 28)
+        speedApplyBtn.Position = UDim2.new(0, 130, 0.5, 0)
+        speedApplyBtn.AnchorPoint = Vector2.new(0, 0.5)
+        speedApplyBtn.BackgroundColor3 = ACCENT_COLOR
+        speedApplyBtn.BorderSizePixel = 0
+        speedApplyBtn.Text = "Apply"
+        speedApplyBtn.TextColor3 = Color3.new(1, 1, 1)
+        speedApplyBtn.TextSize = 12
+        speedApplyBtn.Font = Enum.Font.GothamBold
+        speedApplyBtn.ZIndex = 303
+        speedApplyBtn.Parent = speedFrame
+        createCorner(speedApplyBtn, 4)
+
+        local speedPresets = Instance.new("Frame")
+        speedPresets.Size = UDim2.new(0, 100, 0, 28)
+        speedPresets.Position = UDim2.new(0, 195, 0.5, 0)
+        speedPresets.AnchorPoint = Vector2.new(0, 0.5)
+        speedPresets.BackgroundTransparency = 1
+        speedPresets.ZIndex = 303
+        speedPresets.Parent = speedFrame
+
+        local presetLayout = Instance.new("UIListLayout")
+        presetLayout.FillDirection = Enum.FillDirection.Horizontal
+        presetLayout.Padding = UDim.new(0, 4)
+        presetLayout.Parent = speedPresets
+
+        local presetValues = {0.5, 1, 2}
+        for _, val in ipairs(presetValues) do
+            local presetBtn = Instance.new("TextButton")
+            presetBtn.Size = UDim2.new(0, 30, 1, 0)
+            presetBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
+            presetBtn.BorderSizePixel = 0
+            presetBtn.Text = tostring(val)
+            presetBtn.TextColor3 = Color3.new(1, 1, 1)
+            presetBtn.TextSize = 11
+            presetBtn.Font = Enum.Font.GothamBold
+            presetBtn.ZIndex = 303
+            presetBtn.Parent = speedPresets
+            createCorner(presetBtn, 4)
+
+            presetBtn.MouseButton1Click:Connect(function()
+                speedInput.Text = tostring(val)
+                currentSpeed = val
+                setSpeed(val)
+            end)
+        end
+
+        local function applySpeed()
+            local num = tonumber(speedInput.Text)
+            if num and num >= 0 then
+                currentSpeed = num
+                setSpeed(num)
+                speedInput.BackgroundColor3 = Color3.fromRGB(50, 80, 50) -- Green flash
+                task.delay(0.3, function()
+                    if speedInput.Parent then
+                        speedInput.BackgroundColor3 = Color3.fromRGB(50, 50, 60)
+                    end
+                end)
+            else
+                speedInput.Text = tostring(currentSpeed)
+                speedInput.BackgroundColor3 = Color3.fromRGB(100, 50, 50) -- Red flash
+                task.delay(0.3, function()
+                    if speedInput.Parent then
+                        speedInput.BackgroundColor3 = Color3.fromRGB(50, 50, 60)
+                    end
+                end)
+            end
+        end
+
+        speedApplyBtn.MouseButton1Click:Connect(applySpeed)
+        speedInput.FocusLost:Connect(function(enterPressed)
+            if enterPressed then
+                applySpeed()
+            end
+        end)
+
+        -- ============================================================================
+        -- AUTO-ANIMATION ON SPAWN (Index V2 Integration)
+        -- ============================================================================
+        local autoAnimFrame = Instance.new("Frame")
+        autoAnimFrame.Size = UDim2.new(1, 0, 0, 36)
+        autoAnimFrame.Position = UDim2.new(0, 0, 0, 385)
+        autoAnimFrame.BackgroundColor3 = Color3.fromRGB(50, 40, 60)
+        autoAnimFrame.BorderSizePixel = 0
+        autoAnimFrame.ZIndex = 302
+        autoAnimFrame.Parent = content
+        createCorner(autoAnimFrame, 6)
+
+        local autoAnimToggle = Instance.new("TextButton")
+        autoAnimToggle.Size = UDim2.new(0, 100, 0, 26)
+        autoAnimToggle.Position = UDim2.new(0, 6, 0.5, 0)
+        autoAnimToggle.AnchorPoint = Vector2.new(0, 0.5)
+        autoAnimToggle.BackgroundColor3 = Color3.fromRGB(80, 60, 60)
+        autoAnimToggle.BorderSizePixel = 0
+        autoAnimToggle.Text = "🔄 Auto: OFF"
+        autoAnimToggle.TextColor3 = Color3.new(1, 1, 1)
+        autoAnimToggle.TextSize = 10
+        autoAnimToggle.Font = Enum.Font.GothamBold
+        autoAnimToggle.ZIndex = 303
+        autoAnimToggle.Parent = autoAnimFrame
+        createCorner(autoAnimToggle, 4)
+
+        local autoAnimDropdown = Instance.new("TextButton")
+        autoAnimDropdown.Size = UDim2.new(0, 90, 0, 26)
+        autoAnimDropdown.Position = UDim2.new(0, 110, 0.5, 0)
+        autoAnimDropdown.AnchorPoint = Vector2.new(0, 0.5)
+        autoAnimDropdown.BackgroundColor3 = Color3.fromRGB(60, 50, 80)
+        autoAnimDropdown.BorderSizePixel = 0
+        autoAnimDropdown.Text = "▼ Idle"
+        autoAnimDropdown.TextColor3 = Color3.new(1, 1, 1)
+        autoAnimDropdown.TextSize = 10
+        autoAnimDropdown.Font = Enum.Font.GothamBold
+        autoAnimDropdown.ZIndex = 303
+        autoAnimDropdown.Parent = autoAnimFrame
+        createCorner(autoAnimDropdown, 4)
+
+        local autoAnimLabel = Instance.new("TextLabel")
+        autoAnimLabel.Size = UDim2.new(0, 90, 0, 26)
+        autoAnimLabel.Position = UDim2.new(0, 205, 0.5, 0)
+        autoAnimLabel.AnchorPoint = Vector2.new(0, 0.5)
+        autoAnimLabel.BackgroundTransparency = 1
+        autoAnimLabel.Text = "on spawn"
+        autoAnimLabel.TextColor3 = Color3.fromRGB(150, 150, 150)
+        autoAnimLabel.TextSize = 10
+        autoAnimLabel.Font = Enum.Font.Gotham
+        autoAnimLabel.TextXAlignment = Enum.TextXAlignment.Left
+        autoAnimLabel.ZIndex = 303
+        autoAnimLabel.Parent = autoAnimFrame
+
+        -- Auto-anim dropdown menu
+        local autoAnimMenu = Instance.new("Frame")
+        autoAnimMenu.Size = UDim2.new(0, 90, 0, 120)
+        autoAnimMenu.Position = UDim2.new(0, 110, 0, 421)
+        autoAnimMenu.BackgroundColor3 = Color3.fromRGB(40, 35, 50)
+        autoAnimMenu.BorderSizePixel = 0
+        autoAnimMenu.ZIndex = 400
+        autoAnimMenu.Visible = false
+        autoAnimMenu.Parent = content
+        createCorner(autoAnimMenu, 4)
+        createStroke(autoAnimMenu, ACCENT_COLOR, 1)
+
+        local autoAnimScroll = Instance.new("ScrollingFrame")
+        autoAnimScroll.Size = UDim2.new(1, -4, 1, -4)
+        autoAnimScroll.Position = UDim2.new(0, 2, 0, 2)
+        autoAnimScroll.BackgroundTransparency = 1
+        autoAnimScroll.ScrollBarThickness = 4
+        autoAnimScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+        autoAnimScroll.ZIndex = 401
+        autoAnimScroll.Parent = autoAnimMenu
+
+        local autoAnimLayout = Instance.new("UIListLayout")
+        autoAnimLayout.Padding = UDim.new(0, 2)
+        autoAnimLayout.Parent = autoAnimScroll
+
+        local autoAnimOptions = {"Idle", "Walk", "Run", "Jump", "Dance", "Sit", "Sleep", "Fly", "Swim", "Attack"}
+        local selectedAutoAnim = "Idle"
+
+        for _, animName in ipairs(autoAnimOptions) do
+            local optBtn = Instance.new("TextButton")
+            optBtn.Size = UDim2.new(1, -4, 0, 22)
+            optBtn.BackgroundColor3 = Color3.fromRGB(50, 45, 60)
+            optBtn.BorderSizePixel = 0
+            optBtn.Text = animName
+            optBtn.TextColor3 = Color3.new(1, 1, 1)
+            optBtn.TextSize = 10
+            optBtn.Font = Enum.Font.Gotham
+            optBtn.ZIndex = 402
+            optBtn.Parent = autoAnimScroll
+            createCorner(optBtn, 3)
+
+            optBtn.MouseButton1Click:Connect(function()
+                selectedAutoAnim = animName
+                autoAnimDropdown.Text = "▼ " .. animName
+                autoAnimMenu.Visible = false
+                if _G.BrainrotAnimController then
+                    local enabled = _G.BrainrotAnimController.getAutoAnim()
+                    _G.BrainrotAnimController.setAutoAnim(enabled, animName)
+                end
+            end)
+        end
+
+        autoAnimDropdown.MouseButton1Click:Connect(function()
+            autoAnimMenu.Visible = not autoAnimMenu.Visible
+        end)
+
+        local autoAnimEnabled = false
+        autoAnimToggle.MouseButton1Click:Connect(function()
+            autoAnimEnabled = not autoAnimEnabled
+            if autoAnimEnabled then
+                autoAnimToggle.Text = "🔄 Auto: ON"
+                autoAnimToggle.BackgroundColor3 = Color3.fromRGB(60, 120, 60)
+            else
+                autoAnimToggle.Text = "🔄 Auto: OFF"
+                autoAnimToggle.BackgroundColor3 = Color3.fromRGB(80, 60, 60)
+            end
+            if _G.BrainrotAnimController then
+                _G.BrainrotAnimController.setAutoAnim(autoAnimEnabled, selectedAutoAnim)
+            end
+        end)
+
+        -- ============================================================================
+        -- ANIMATION LIST UPDATE
+        -- ============================================================================
+        local function updateAnimList(animalName)
+            for _, child in ipairs(animScroll:GetChildren()) do
+                if child:IsA("TextButton") or child:IsA("TextLabel") then
+                    child:Destroy()
+                end
+            end
+            animButtons = {}
+
+            if not animalName then
+                local noLbl = Instance.new("TextLabel")
+                noLbl.Size = UDim2.new(1, -8, 0, 30)
+                noLbl.BackgroundTransparency = 1
+                noLbl.Text = "Click a podium button to select"
+                noLbl.TextColor3 = Color3.fromRGB(150, 150, 150)
+                noLbl.TextSize = 11
+                noLbl.Font = Enum.Font.GothamBold
+                noLbl.ZIndex = 303
+                noLbl.Parent = animScroll
+                return
+            end
+
+            local anims = getAvailableAnimations(animalName)
+
+            if #anims == 0 then
+                local noLbl = Instance.new("TextLabel")
+                noLbl.Size = UDim2.new(1, -8, 0, 30)
+                noLbl.BackgroundTransparency = 1
+                noLbl.Text = "No animations for " .. animalName
+                noLbl.TextColor3 = Color3.fromRGB(255, 150, 150)
+                noLbl.TextSize = 11
+                noLbl.Font = Enum.Font.GothamBold
+                noLbl.ZIndex = 303
+                noLbl.Parent = animScroll
+                return
+            end
+
+            for i, anim in ipairs(anims) do
+                local btn = Instance.new("TextButton")
+                btn.Name = "Anim_" .. anim.name
+                btn.Size = UDim2.new(1, -8, 0, 34)
+                btn.LayoutOrder = i
+                btn.BackgroundColor3 = Color3.fromRGB(60, 50, 80)
+                btn.BorderSizePixel = 0
+                btn.Text = "▶️ " .. anim.name
+                btn.TextColor3 = Color3.new(1, 1, 1)
+                btn.TextSize = 13
+                btn.Font = Enum.Font.GothamBold
+                btn.ZIndex = 303
+                btn.Parent = animScroll
+                createCorner(btn, 6)
+
+                animButtons[anim.name] = btn
+
+                btn.MouseButton1Click:Connect(function()
+                    for _, b in pairs(animButtons) do
+                        b.BackgroundColor3 = Color3.fromRGB(60, 50, 80)
+                    end
+
+                    if isSelectAllMode and #podiumAnimators > 0 then
+                        -- Play on all animators (with track saving/restore)
+                        local successCount = 0
+                        print("[AnimController] Playing", anim.name, "on", #podiumAnimators, "animators")
+                        for _, entry in ipairs(podiumAnimators) do
+                            local folder = AnimalAnimations:FindFirstChild(entry.animalName)
+                            print("[AnimController]   Entry:", entry.animalName, "folder:", folder and "OK" or "NIL",
+                                "animator:", entry.animator and "OK" or "NIL")
+                            if folder and entry.animator then
+                                local animObj = folder:FindFirstChild(anim.name)
+                                if not animObj then
+                                    for _, child in ipairs(folder:GetChildren()) do
+                                        if child:IsA("Animation") and child.Name:lower() == anim.name:lower() then
+                                            animObj = child
+                                            break
+                                        end
+                                    end
+                                end
+                                if not animObj and (anim.name == "Idle" or anim.name == "Walk") then
+                                    animObj = folder:FindFirstChildOfClass("Animation")
+                                end
+
+                                print("[AnimController]     animObj:", animObj and animObj.Name or "NIL")
+                                if animObj then
+                                    pcall(function()
+                                        local animatorKey = tostring(entry.animator)
+
+                                        -- Stop previous custom track if any
+                                        if entry.currentTrack then
+                                            entry.currentTrack:Stop(0.2)
+                                        end
+
+                                        -- Save original tracks (game's idle) first time only
+                                        if not entry.savedTracks then
+                                            entry.savedTracks = {}
+                                            for _, t in ipairs(entry.animator:GetPlayingAnimationTracks()) do
+                                                table.insert(entry.savedTracks, t)
+                                                t:Stop(0.2)
+                                            end
+                                        else
+                                            -- Already saved, just stop playing tracks
+                                            for _, t in ipairs(entry.animator:GetPlayingAnimationTracks()) do
+                                                t:Stop(0.2)
+                                            end
+                                        end
+
+                                        local track = entry.animator:LoadAnimation(animObj)
+                                        track.Looped = true
+                                        track:Play(0.2)
+                                        track:AdjustSpeed(currentSpeed)
+                                        entry.currentTrack = track
+                                        successCount = successCount + 1
+                                    end)
+                                end
+                            end
+                        end
+                        btn.Text = "▶️ " .. anim.name .. " (" .. successCount .. "/" .. #podiumAnimators .. ")"
+                        if successCount > 0 then
+                            btn.BackgroundColor3 = ACCENT_COLOR
+                        else
+                            btn.BackgroundColor3 = Color3.fromRGB(200, 80, 80)
+                        end
+                        task.delay(2, function()
+                            if btn.Parent then
+                                btn.Text = "▶️ " .. anim.name
+                            end
+                        end)
+                    else
+                        -- Single mode
+                        if playAnimation(currentAnimalName, anim.name) then
+                            btn.BackgroundColor3 = ACCENT_COLOR
+                        else
+                            btn.BackgroundColor3 = Color3.fromRGB(200, 80, 80)
+                            task.delay(0.5, function()
+                                if btn.Parent then
+                                    btn.BackgroundColor3 = Color3.fromRGB(60, 50, 80)
+                                end
+                            end)
+                        end
+                    end
+                end)
+            end
+        end
+
+        -- ============================================================================
+        -- PODIUM BUTTONS POPULATION
+        -- ============================================================================
+        local podiumButtons = {}
+
+        local function onPodiumSelected(model, data)
+            if data and data.Index then
+                local displayName = data.Index
+                local animalData = AnimalsData[data.Index]
+                if animalData and animalData.DisplayName then
+                    displayName = animalData.DisplayName
+                end
+                local mutText = data.Mutation and (" [" .. data.Mutation .. "]") or ""
+                animalInfoLabel.Text = "🐾 " .. displayName .. mutText
+                animalInfoLabel.TextColor3 = Color3.fromRGB(150, 255, 150)
+                updateAnimList(data.Index)
+            else
+                animalInfoLabel.Text = "Empty podium"
+                animalInfoLabel.TextColor3 = Color3.fromRGB(255, 150, 150)
+                updateAnimList(nil)
+            end
+        end
+
+        local function updatePodiumButtons(autoSelect)
+            -- Clear existing buttons
+            for _, child in ipairs(podiumScroll:GetChildren()) do
+                if child:IsA("TextButton") then
+                    child:Destroy()
+                end
+            end
+            podiumButtons = {}
+
+            local podiums = getPodiums()
+            local firstWithAnimal = nil
+
+            -- Pre-check which podiums have animals
+            local podiumStatus = {}
+            for _, p in ipairs(podiums) do
+                local hasAnimal = podiumHasAnimal(p.index)
+                podiumStatus[p.index] = hasAnimal
+                if hasAnimal and not firstWithAnimal then
+                    firstWithAnimal = p.index
+                end
+            end
+
+            if #podiums == 0 then
+                local noLbl = Instance.new("TextLabel")
+                noLbl.Size = UDim2.new(0, 150, 0, 42)
+                noLbl.BackgroundTransparency = 1
+                noLbl.Text = "No podiums found"
+                noLbl.TextColor3 = Color3.fromRGB(255, 150, 150)
+                noLbl.TextSize = 11
+                noLbl.Font = Enum.Font.GothamBold
+                noLbl.ZIndex = 304
+                noLbl.Parent = podiumScroll
+                return
+            end
+
+            for i, p in ipairs(podiums) do
+                local hasAnimal = podiumStatus[p.index]
+                local isSelected = (p.index == currentPodiumIndex)
+
+                local btn = Instance.new("TextButton")
+                btn.Size = UDim2.new(0, 42, 0, 42)
+                btn.LayoutOrder = i
+
+                if isSelected then
+                    btn.BackgroundColor3 = PODIUM_MODE_COLOR
+                elseif hasAnimal then
+                    btn.BackgroundColor3 = Color3.fromRGB(40, 120, 60)
+                else
+                    btn.BackgroundColor3 = Color3.fromRGB(40, 40, 45)
+                end
+
+                btn.BorderSizePixel = 0
+                btn.Text = hasAnimal and tostring(p.index) or "⊘"
+                btn.TextColor3 = hasAnimal and Color3.new(1, 1, 1) or Color3.fromRGB(100, 100, 100)
+                btn.TextSize = 16
+                btn.Font = Enum.Font.GothamBold
+                btn.ZIndex = 304
+                btn.Parent = podiumScroll
+                createCorner(btn, 6)
+
+                if hasAnimal then
+                    btn.MouseEnter:Connect(function()
+                        if not isSelectAllMode and p.index ~= currentPodiumIndex then
+                            btn.BackgroundColor3 = Color3.fromRGB(60, 150, 80)
+                        end
+                    end)
+                    btn.MouseLeave:Connect(function()
+                        if not isSelectAllMode and p.index ~= currentPodiumIndex then
+                            btn.BackgroundColor3 = Color3.fromRGB(40, 120, 60)
+                        elseif isSelectAllMode then
+                            btn.BackgroundColor3 = Color3.fromRGB(255, 180, 50)
+                        end
+                    end)
+                end
+
+                podiumButtons[p.index] = btn
+
+                btn.MouseButton1Click:Connect(function()
+                    if not hasAnimal then
+                        return
+                    end
+
+                    isSelectAllMode = false
+                    podiumAnimators = {}
+                    podiumSelectAllBtn.BackgroundColor3 = Color3.fromRGB(150, 120, 50)
+                    podiumSelectAllBtn.Text = "⭐ ALL"
+
+                    for idx, b in pairs(podiumButtons) do
+                        local status = podiumStatus[idx]
+                        if status then
+                            b.BackgroundColor3 = Color3.fromRGB(40, 120, 60)
+                        else
+                            b.BackgroundColor3 = Color3.fromRGB(40, 40, 45)
+                        end
+                    end
+                    btn.BackgroundColor3 = PODIUM_MODE_COLOR
+                    selectPodium(p.index, onPodiumSelected)
+                end)
+            end
+
+            -- Auto-select first podium with animal
+            if autoSelect and firstWithAnimal and not currentPodiumIndex then
+                task.defer(function()
+                    local btn = podiumButtons[firstWithAnimal]
+                    if btn then
+                        for idx, b in pairs(podiumButtons) do
+                            local status = podiumStatus[idx]
+                            if status then
+                                b.BackgroundColor3 = Color3.fromRGB(40, 120, 60)
+                            else
+                                b.BackgroundColor3 = Color3.fromRGB(40, 40, 45)
+                            end
+                        end
+                        btn.BackgroundColor3 = PODIUM_MODE_COLOR
+                        selectPodium(firstWithAnimal, onPodiumSelected)
+                    end
+                end)
+            end
+        end
+
+        -- ============================================================================
+        -- PODIUM SELECT ALL
+        -- ============================================================================
+        podiumSelectAllBtn.MouseButton1Click:Connect(function()
+            isSelectAllMode = true
+            podiumAnimators = {}
+            podiumSelectAllBtn.BackgroundColor3 = Color3.fromRGB(255, 180, 50)
+            podiumSelectAllBtn.Text = "⭐ ACTIVE"
+
+            -- Get ALL animals on plot
+            local plotAnimals = getBrainrotsOnMyPlot()
+            local firstAnimalName = nil
+            local count = 0
+
+            for _, animal in ipairs(plotAnimals) do
+                if animal.model then
+                    local animator = setupAnimator(animal.model)
+                    if animator then
+                        table.insert(podiumAnimators, {
+                            animator = animator,
+                            animalName = animal.index,
+                            model = animal.model,
+                            podiumIndex = animal.podiumIndex
+                        })
+                        count = count + 1
+                        if not firstAnimalName then
+                            firstAnimalName = animal.index
+                        end
+                    end
+                end
+            end
+
+            -- Highlight all podium buttons
+            for idx, btn in pairs(podiumButtons) do
+                local status = podiumStatus[idx]
+                if status then
+                    btn.BackgroundColor3 = Color3.fromRGB(255, 180, 50) -- Gold for selected
+                end
+            end
+
+            currentAnimalName = firstAnimalName
+            currentPodiumIndex = nil -- No single selection
+            animalInfoLabel.Text = "⭐ ALL (" .. count .. " on plot)"
+            animalInfoLabel.TextColor3 = Color3.fromRGB(255, 200, 100)
+
+            if firstAnimalName then
+                updateAnimList(firstAnimalName)
+            end
+        end)
+
+        -- Initialize
+        updateCollapse()
+        updateAnimList(nil)
+        task.defer(function()
+            updatePodiumButtons(true)
+        end)
+
+        -- ========================================================================
+        -- HEARTBEAT AUTO-REFRESH (updates podium list every 2 seconds)
+        -- ========================================================================
+        local lastRefreshTime = 0
+        local REFRESH_INTERVAL = 2 -- seconds
+        local lastPodiumSnapshot = {} -- Track what we last saw
+
+        local function getPodiumSnapshot()
+            local snapshot = {}
+            local podiums = getPodiums()
+            for _, p in ipairs(podiums) do
+                local hasAnimal = podiumHasAnimal(p.index)
+                snapshot[p.index] = hasAnimal
+            end
+            return snapshot
+        end
+
+        local function snapshotsMatch(a, b)
+            for k, v in pairs(a) do
+                if b[k] ~= v then
+                    return false
+                end
+            end
+            for k, v in pairs(b) do
+                if a[k] ~= v then
+                    return false
+                end
+            end
+            return true
+        end
+
+        local heartbeatConn
+        heartbeatConn = RunService.Heartbeat:Connect(function()
+            if not screenGui or not screenGui.Parent then
+                if heartbeatConn then
+                    heartbeatConn:Disconnect()
+                end
+                return
+            end
+
+            -- Only refresh when UI is visible
+            if not screenGui.Enabled or isCollapsed then
+                return
+            end
+
+            local now = tick()
+            if now - lastRefreshTime < REFRESH_INTERVAL then
+                return
+            end
+            lastRefreshTime = now
+
+            -- Check if podium state changed
+            local newSnapshot = getPodiumSnapshot()
+            if not snapshotsMatch(lastPodiumSnapshot, newSnapshot) then
+                lastPodiumSnapshot = newSnapshot
+                updatePodiumButtons(false) -- Don't auto-select, just refresh buttons
+            end
+        end)
+
+        mainUI = {
+            screenGui = screenGui,
+            panel = panel,
+            refreshPodiums = function()
+                updatePodiumButtons(false)
+            end
+        }
+
+        return mainUI
+    end
+
+    -- ============================================================================
+    -- TOGGLE BUTTON
+    -- ============================================================================
+    local function createToggleButton()
+        local playerGui = LocalPlayer:WaitForChild("PlayerGui")
+
+        local existing = playerGui:FindFirstChild("AnimControllerToggleGui")
+        if existing then
+            existing:Destroy()
+        end
+
+        local screenGui = Instance.new("ScreenGui")
+        screenGui.Name = "AnimControllerToggleGui"
+        screenGui.ResetOnSpawn = false
+        screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+        screenGui.Parent = playerGui
+
+        local toggleBtn = Instance.new("TextButton")
+        toggleBtn.Size = UDim2.new(0, 44, 0, 44)
+        toggleBtn.AnchorPoint = Vector2.new(0, 0)
+
+        local savedPos = loadConfig(TOGGLE_FILE)
+        if savedPos then
+            toggleBtn.Position = UDim2.new(0, savedPos.X or 10, 0, savedPos.Y or 200)
+        else
+            toggleBtn.Position = UDim2.new(0, 10, 0, 300)
+        end
+
+        toggleBtn.BackgroundColor3 = HEADER_COLOR
+        toggleBtn.BorderSizePixel = 0
+        toggleBtn.Text = "🎬"
+        toggleBtn.TextSize = 24
+        toggleBtn.ZIndex = 100
+        toggleBtn.Parent = screenGui
+        createCorner(toggleBtn, 10)
+        createStroke(toggleBtn, ACCENT_COLOR, 2)
+
+        local dragging, dragStart, startPos = false, nil, nil
+        local dragThreshold = 5
+        local wasDragging = false
+
+        toggleBtn.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 then
+                dragging = true
+                wasDragging = false
+                dragStart = input.Position
+                startPos = toggleBtn.AbsolutePosition
+            end
+        end)
+
+        local function saveTogglePos()
+            local x = toggleBtn.AbsolutePosition.X
+            local y = toggleBtn.AbsolutePosition.Y
+            saveConfig(TOGGLE_FILE, {
+                X = x,
+                Y = y
+            })
+        end
+
+        toggleBtn.InputEnded:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 then
+                if not wasDragging then
+                    if not mainUI then
+                        createMainUI()
+                    else
+                        mainUI.screenGui.Enabled = not mainUI.screenGui.Enabled
+                    end
+                else
+                    -- Save using AbsolutePosition for accuracy
+                    task.defer(saveTogglePos)
+                end
+                dragging = false
+                wasDragging = false
+            end
+        end)
+
+        UserInputService.InputChanged:Connect(function(input)
+            if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+                local delta = input.Position - dragStart
+                if delta.Magnitude > dragThreshold then
+                    wasDragging = true
+                end
+                if wasDragging then
+                    toggleBtn.Position = UDim2.new(0, startPos.X + delta.X, 0, startPos.Y + delta.Y)
+                end
+            end
+        end)
+
+        return toggleBtn
+    end
+
+    -- ============================================================================
+    -- GLOBAL API & SIGNAL SYSTEM
+    -- ============================================================================
+
+    -- Create BindableEvent for spawn notifications from Index V2
+    local AnimalSpawnedEvent = Instance.new("BindableEvent")
+    AnimalSpawnedEvent.Name = "AnimalSpawnedEvent"
+
+    -- Auto-animation settings
+    local autoAnimEnabled = false
+    local autoAnimName = "Idle" -- Default animation to auto-play on spawn
+
+    -- Handler for when Index V2 spawns an animal
+    local function onAnimalSpawned(animalName, podiumIndex, mutation)
+        if not autoAnimEnabled then
+            return
+        end
+
+        print("[AnimController] 🎬 Auto-anim triggered:", animalName, "on podium", podiumIndex)
+
+        -- Wait a moment for the model to spawn
+        task.delay(0.5, function()
+            local model, data = getAnimalOnPodium(podiumIndex)
+            if model then
+                local animator = setupAnimator(model)
+                if animator then
+                    -- Play the auto animation
+                    local folder = AnimalAnimations:FindFirstChild(animalName)
+                    if folder then
+                        local animObj = folder:FindFirstChild(autoAnimName)
+                        if not animObj then
+                            -- Try case-insensitive match
+                            for _, child in ipairs(folder:GetChildren()) do
+                                if child:IsA("Animation") and child.Name:lower() == autoAnimName:lower() then
+                                    animObj = child
+                                    break
+                                end
+                            end
+                        end
+                        if animObj then
+                            pcall(function()
+                                -- Stop game's animations
+                                for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
+                                    track:Stop(0.2)
+                                end
+                                -- Play our animation
+                                local track = animator:LoadAnimation(animObj)
+                                track.Looped = true
+                                track:Play(0.2)
+                                track:AdjustSpeed(currentSpeed)
+                                print("[AnimController] ✅ Auto-played", autoAnimName, "on", animalName)
+                            end)
+                        end
+                    end
+                end
+            end
+        end)
+    end
+
+    AnimalSpawnedEvent.Event:Connect(onAnimalSpawned)
+
+    _G.BrainrotAnimController = {
+        show = function()
+            if not mainUI then
+                createMainUI()
+            else
+                mainUI.screenGui.Enabled = true
+            end
+        end,
+        hide = function()
+            if mainUI then
+                mainUI.screenGui.Enabled = false
+            end
+        end,
+        toggle = function()
+            if not mainUI then
+                createMainUI()
+            else
+                mainUI.screenGui.Enabled = not mainUI.screenGui.Enabled
+            end
+        end,
+        -- Manual refresh podium buttons
+        refresh = function()
+            if mainUI and mainUI.refreshPodiums then
+                mainUI.refreshPodiums()
+            end
+        end,
+        playAnimation = playAnimation,
+        stopAll = stopAllAnimations,
+        setSpeed = setSpeed,
+        getAnimations = getAvailableAnimations,
+        getBrainrotsOnPlot = getBrainrotsOnMyPlot,
+
+        -- Signal for Index V2 to fire when spawning
+        onSpawn = AnimalSpawnedEvent,
+
+        -- Fire this from Index V2: _G.BrainrotAnimController.notifySpawn(animalName, podiumIndex, mutation)
+        notifySpawn = function(animalName, podiumIndex, mutation)
+            AnimalSpawnedEvent:Fire(animalName, podiumIndex, mutation)
+        end,
+
+        -- Auto-animation controls
+        setAutoAnim = function(enabled, animName)
+            autoAnimEnabled = enabled
+            if animName then
+                autoAnimName = animName
+            end
+            print("[AnimController] Auto-anim:", enabled and "ON" or "OFF", "Animation:", autoAnimName)
+        end,
+
+        getAutoAnim = function()
+            return autoAnimEnabled, autoAnimName
+        end
+    }
+
+    -- Initialize
+    print("[AnimController] 🎬 Loaded! Click numbered podium buttons to select brainrots, or use ALL")
+    createToggleButton()
+end)
