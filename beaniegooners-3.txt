@@ -1,0 +1,743 @@
+-- ╔══════════════════════════════════════════╗
+-- ║   HEROHUB  ·  beaniegooners edition      ║
+-- ║        Reset · Steal · AP Spam           ║
+-- ╚══════════════════════════════════════════╝
+
+local TweenService     = game:GetService("TweenService")
+local Players          = game:GetService("Players")
+local RunService       = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Lighting         = game:GetService("Lighting")
+local Workspace        = game:GetService("Workspace")
+local ReplicatedStorage= game:GetService("ReplicatedStorage")
+local CoreGui          = game:GetService("CoreGui")
+local VIM              = game:GetService("VirtualInputManager")
+local LocalPlayer      = Players.LocalPlayer
+local PlayerGui        = LocalPlayer:WaitForChild("PlayerGui")
+local Camera           = workspace.CurrentCamera
+local Backpack         = LocalPlayer:WaitForChild("Backpack")
+
+-- ══════════════════ PALETTE ══════════════════
+local C = {
+    BG      = Color3.fromRGB(5,   5,   8),
+    Panel   = Color3.fromRGB(11,  11,  16),
+    Frame   = Color3.fromRGB(16,  16,  22),
+    Header  = Color3.fromRGB(9,   9,   14),
+    Neon    = Color3.fromRGB(255, 255, 255),
+    Dim     = Color3.fromRGB(90,  90, 105),
+    Cyan    = Color3.fromRGB(0,  210, 255),
+    Purple  = Color3.fromRGB(150, 80, 255),
+    Green   = Color3.fromRGB(60,  220, 130),
+    Red     = Color3.fromRGB(230,  70,  70),
+    Gold    = Color3.fromRGB(255, 195,  60),
+    Text    = Color3.fromRGB(225, 225, 232),
+}
+
+-- ══════════════════ HELPERS ══════════════════
+local function tw(o, p, t, s)
+    TweenService:Create(o, TweenInfo.new(t or 0.22, s or Enum.EasingStyle.Quint), p):Play()
+end
+local function corner(p, r)
+    local c = Instance.new("UICorner", p); c.CornerRadius = UDim.new(0, r or 10)
+end
+local function stroke(p, col, thick)
+    local s = Instance.new("UIStroke", p)
+    s.Color = col or C.Dim; s.Thickness = thick or 1.2; return s
+end
+local function lbl(parent, text, sz, col, font, xa)
+    local l = Instance.new("TextLabel", parent)
+    l.BackgroundTransparency = 1; l.Text = text
+    l.TextSize = sz or 11; l.TextColor3 = col or C.Text
+    l.Font = font or Enum.Font.Gotham
+    l.TextXAlignment = xa or Enum.TextXAlignment.Center
+    return l
+end
+local function animBorder(strokeObj, c1, c2)
+    local g = Instance.new("UIGradient", strokeObj)
+    g.Color = ColorSequence.new{
+        ColorSequenceKeypoint.new(0,    c1),
+        ColorSequenceKeypoint.new(0.42, c1),
+        ColorSequenceKeypoint.new(0.5,  c2),
+        ColorSequenceKeypoint.new(0.58, c1),
+        ColorSequenceKeypoint.new(1,    c1),
+    }
+    task.spawn(function()
+        while strokeObj and strokeObj.Parent do
+            for i = -1, 1, 0.008 do
+                g.Offset = Vector2.new(i, 0); task.wait()
+            end
+        end
+    end)
+    return g
+end
+
+-- ══════════════════ CLEANUP ══════════════════
+for _, g in ipairs(CoreGui:GetChildren()) do
+    if g.Name:find("HeroHub") or g.Name:find("APSpammer") then g:Destroy() end
+end
+
+-- ══════════════════ INSTA RESET ══════════════════
+local resetDebounce = false
+local charConn, cachedCraftCF, craftMachine
+
+local function updateCraftCache()
+    craftMachine = Workspace:FindFirstChild("CraftingMachine")
+    if craftMachine then
+        local p = craftMachine:FindFirstChild("VFX", true)
+        if p then p = p:FindFirstChild("Secret", true) end
+        if p then p = p:FindFirstChild("SoundPart", true) end
+        if p then cachedCraftCF = p.CFrame end
+    end
+end
+updateCraftCache()
+Workspace.ChildAdded:Connect(function(c)
+    if c.Name == "CraftingMachine" then task.defer(updateCraftCache) end
+end)
+Players.RespawnTime = 0
+RunService.Heartbeat:Connect(function()
+    if Players.RespawnTime ~= 0 then Players.RespawnTime = 0 end
+end)
+
+-- ══════════════════ MZK FPS BOOST ══════════════════
+Lighting.GlobalShadows = false
+Lighting.EnvironmentDiffuseScale = 0
+Lighting.EnvironmentSpecularScale = 0
+for _, v in ipairs(Lighting:GetChildren()) do
+    if v:IsA("PostEffect") then v.Enabled = false end
+end
+for _, v in ipairs(workspace:GetDescendants()) do
+    if v:IsA("ParticleEmitter") then v.Enabled = false end
+end
+local function cleanChar(char)
+    if char == LocalPlayer.Character then return end
+    for _, a in ipairs(char:GetChildren()) do
+        if a:IsA("Accessory") then a:Destroy() end
+    end
+    char.ChildAdded:Connect(function(c)
+        if c:IsA("Accessory") then c:Destroy() end
+    end)
+end
+for _, h in ipairs(workspace:GetDescendants()) do
+    if h:IsA("Humanoid") then cleanChar(h.Parent) end
+end
+workspace.DescendantAdded:Connect(function(d)
+    if d:IsA("Humanoid") then task.wait(0.1); cleanChar(d.Parent) end
+end)
+
+-- ══════════════════ AUTO STEAL ══════════════════
+local stealEnabled = false
+local stealCoroutine
+local function getHRP()
+    local char = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+    return char:WaitForChild("HumanoidRootPart", 5)
+end
+local function getPromptPart(prompt)
+    local par = prompt.Parent
+    if par:IsA("BasePart") then return par end
+    if par:IsA("Model") then return par.PrimaryPart or par:FindFirstChildWhichIsA("BasePart") end
+    if par:IsA("Attachment") then return par.Parent end
+    return par:FindFirstChildWhichIsA("BasePart", true)
+end
+local function findStealPrompt(hrp)
+    local nearest, minD = nil, math.huge
+    local plots = workspace:FindFirstChild("Plots"); if not plots then return nil end
+    for _, d in pairs(plots:GetDescendants()) do
+        if d:IsA("ProximityPrompt") and d.Enabled and d.ActionText == "Steal" then
+            local pt = getPromptPart(d)
+            if pt then
+                local dist = (hrp.Position - pt.Position).Magnitude
+                if dist < minD then minD = dist; nearest = d end
+            end
+        end
+    end
+    return nearest
+end
+local function triggerPrompt(p)
+    if not p or not p:IsDescendantOf(workspace) then return end
+    p.MaxActivationDistance = 9e9; p.RequiresLineOfSight = false; p.ClickablePrompt = true
+    local ok = pcall(function() fireproximityprompt(p, 9e9, 0.5) end)
+    if not ok then pcall(function() p:InputHoldBegin(); task.wait(0.5); p:InputHoldEnd() end) end
+end
+local function stealLoop()
+    while stealEnabled do
+        local hrp = getHRP()
+        if hrp then local p = findStealPrompt(hrp); if p then triggerPrompt(p) end
+        else LocalPlayer.CharacterAdded:Wait() end
+        task.wait(0.2)
+    end
+end
+local function setStealing(state)
+    if state == stealEnabled then return end
+    stealEnabled = state
+    if stealEnabled then
+        stealCoroutine = coroutine.create(stealLoop)
+        coroutine.resume(stealCoroutine)
+    else stealCoroutine = nil end
+end
+
+-- ══════════════════ AP SPAMMER LOGIC ══════════════════
+local ALL_CMDS = {"balloon","inverse","jail","jumpscare","morph","nightvision","ragdoll","rocket","tiny"}
+local COOLDOWNS = {rocket=120,ragdoll=30,balloon=30,inverse=60,nightvision=60,jail=60,tiny=60,jumpscare=60,morph=60}
+local activeCooldowns = {}
+
+local function fireClick(button)
+    if not button then return end
+    if firesignal then
+        pcall(function()
+            firesignal(button.MouseButton1Click)
+            firesignal(button.MouseButton1Down)
+            firesignal(button.Activated)
+        end)
+    else
+        local x = button.AbsolutePosition.X + button.AbsoluteSize.X/2
+        local y = button.AbsolutePosition.Y + button.AbsoluteSize.Y/2 + 58
+        VIM:SendMouseButtonEvent(x, y, 0, true,  game, 0)
+        VIM:SendMouseButtonEvent(x, y, 0, false, game, 0)
+    end
+end
+
+local function isOnCooldown(cmd)
+    local adminGui = PlayerGui:FindFirstChild("AdminPanel")
+    if adminGui then
+        local ok, res = pcall(function()
+            local sf = adminGui.AdminPanel.Content.ScrollingFrame
+            local b = sf:FindFirstChild(cmd)
+            if b then local t = b:FindFirstChild("Timer"); if t then return t.Visible end end
+            return false
+        end)
+        if ok and res then return true end
+    end
+    if not activeCooldowns[cmd] then return false end
+    return (tick() - activeCooldowns[cmd]) < (COOLDOWNS[cmd] or 0)
+end
+
+local function runAdminCommand(targetPlayer, commandName)
+    local adminGui = PlayerGui:WaitForChild("AdminPanel", 5)
+    if not adminGui then return false end
+    local ok, res = pcall(function()
+        local contentScroll = adminGui.AdminPanel.Content.ScrollingFrame
+        local cmdBtn = contentScroll:FindFirstChild(commandName)
+        if not cmdBtn then return false end
+        fireClick(cmdBtn); task.wait(0.05)
+        local profilesScroll = adminGui.AdminPanel.Profiles.ScrollingFrame
+        local playerBtn = profilesScroll:FindFirstChild(targetPlayer.Name)
+        if not playerBtn then return false end
+        fireClick(playerBtn); return true
+    end)
+    return ok and res
+end
+_G.runAdminCommand = runAdminCommand
+
+local function spamAllCmds(plr)
+    local count = 0
+    for _, cmd in ipairs(ALL_CMDS) do
+        if not isOnCooldown(cmd) then
+            task.delay(count * 0.12, function()
+                if runAdminCommand(plr, cmd) then activeCooldowns[cmd] = tick() end
+            end)
+            count += 1
+        end
+    end
+    return count
+end
+
+-- ══════════════════ BUILD MAIN HUB GUI ══════════════════
+-- HeroHub sits on the RIGHT side of the screen
+local hubGui = Instance.new("ScreenGui", CoreGui)
+hubGui.Name = "HeroHub_" .. math.random(1000,9999)
+hubGui.ResetOnSpawn = false
+hubGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+
+local WIN_W, WIN_H = 248, 242
+
+local main = Instance.new("Frame", hubGui)
+-- start collapsed at the right-side final X so it pops open in place
+main.Size     = UDim2.new(0, 0, 0, 0)
+main.Position = UDim2.new(1, -WIN_W - 10, 0.5, -WIN_H/2)
+main.BackgroundColor3 = C.BG
+main.BorderSizePixel  = 0
+main.Active = true; main.Draggable = true
+main.ClipsDescendants = true
+corner(main, 18)
+
+local mStroke = stroke(main, C.Dim, 1.6)
+animBorder(mStroke, C.Purple, C.Cyan)
+
+local sheen = Instance.new("Frame", main)
+sheen.Size = UDim2.new(1,0,0.38,0)
+sheen.BackgroundColor3 = Color3.new(1,1,1)
+sheen.BackgroundTransparency = 0.94
+sheen.BorderSizePixel = 0; sheen.ZIndex = 1
+corner(sheen, 18)
+
+for i = 1, 10 do
+    local dot = Instance.new("Frame", main)
+    dot.Size = UDim2.new(0,2,0,2)
+    dot.Position = UDim2.new(math.random(), 0, math.random(), 0)
+    dot.BackgroundColor3 = i%3==0 and C.Cyan or i%3==1 and C.Purple or C.Neon
+    dot.BackgroundTransparency = 0.6
+    dot.BorderSizePixel = 0; dot.ZIndex = 2
+    corner(dot, 50)
+    task.spawn(function()
+        while dot and dot.Parent do
+            local t = math.random(8,16)
+            tw(dot, {Position=UDim2.new(math.random(),0,math.random(),0)}, t, Enum.EasingStyle.Sine)
+            task.wait(t)
+        end
+    end)
+end
+
+-- Header
+local header = Instance.new("Frame", main)
+header.Size = UDim2.new(1,0,0,42)
+header.BackgroundColor3 = C.Header
+header.BorderSizePixel = 0; header.ZIndex = 3
+corner(header, 18)
+stroke(header, Color3.fromRGB(22,22,32))
+
+local acl = Instance.new("Frame", header)
+acl.Size = UDim2.new(1,0,0,2); acl.Position = UDim2.new(0,0,1,-2)
+acl.BackgroundColor3 = C.Cyan; acl.BorderSizePixel = 0; acl.ZIndex = 4
+local aclGrad = Instance.new("UIGradient", acl)
+aclGrad.Color = ColorSequence.new{
+    ColorSequenceKeypoint.new(0,   Color3.new(0,0,0)),
+    ColorSequenceKeypoint.new(0.2, C.Purple),
+    ColorSequenceKeypoint.new(0.5, C.Cyan),
+    ColorSequenceKeypoint.new(0.8, C.Purple),
+    ColorSequenceKeypoint.new(1,   Color3.new(0,0,0)),
+}
+task.spawn(function()
+    while acl and acl.Parent do
+        for i = -1, 1, 0.012 do aclGrad.Offset = Vector2.new(i,0); task.wait() end
+    end
+end)
+
+for i = 1, 3 do
+    local dot = Instance.new("Frame", header)
+    dot.Size = UDim2.new(0,7,0,7)
+    dot.Position = UDim2.new(0, 10+(i-1)*14, 0.5, -3)
+    dot.BackgroundColor3 = i==1 and Color3.fromRGB(235,70,70)
+                        or i==2 and Color3.fromRGB(235,185,50)
+                        or         Color3.fromRGB(70,210,90)
+    dot.BorderSizePixel = 0; dot.ZIndex = 5
+    corner(dot, 50)
+end
+
+local titleLbl = lbl(header, "⚡ HERO HUB", 14, C.Neon, Enum.Font.GothamBold)
+titleLbl.Size = UDim2.new(1,0,1,0); titleLbl.ZIndex = 5
+
+local subLbl = lbl(header, "beaniegooners", 8, C.Cyan, Enum.Font.GothamBold)
+subLbl.Size = UDim2.new(1,0,0,12); subLbl.Position = UDim2.new(0,0,1,-14); subLbl.ZIndex = 5
+
+local closeBtn = Instance.new("TextButton", header)
+closeBtn.Size = UDim2.new(0,22,0,22); closeBtn.Position = UDim2.new(1,-28,0.5,-11)
+closeBtn.Text = "✕"; closeBtn.BackgroundColor3 = Color3.fromRGB(25,25,34)
+closeBtn.TextColor3 = C.Dim; closeBtn.Font = Enum.Font.GothamBold; closeBtn.TextSize = 10
+closeBtn.BorderSizePixel = 0; closeBtn.AutoButtonColor = false; closeBtn.ZIndex = 6
+corner(closeBtn, 6); stroke(closeBtn, Color3.fromRGB(40,40,55))
+closeBtn.MouseEnter:Connect(function() tw(closeBtn,{BackgroundColor3=Color3.fromRGB(150,25,25)},0.15) end)
+closeBtn.MouseLeave:Connect(function() tw(closeBtn,{BackgroundColor3=Color3.fromRGB(25,25,34)},0.15) end)
+closeBtn.MouseButton1Click:Connect(function()
+    tw(main,{Size=UDim2.new(0,0,0,0)},0.3,Enum.EasingStyle.Quint)
+    task.wait(0.32); hubGui:Destroy()
+end)
+
+-- Section / Button / Status helpers
+local function makeSection(yOff, labelText, accentColor)
+    local sec = Instance.new("Frame", main)
+    sec.Size = UDim2.new(1,-14,0,16); sec.Position = UDim2.new(0,7,0,yOff)
+    sec.BackgroundTransparency = 1; sec.ZIndex = 3
+    local line = Instance.new("Frame", sec)
+    line.Size = UDim2.new(1,0,0,1); line.Position = UDim2.new(0,0,0.5,0)
+    line.BackgroundColor3 = accentColor or C.Purple
+    line.BackgroundTransparency = 0.55; line.BorderSizePixel = 0; line.ZIndex = 3
+    local tag = lbl(sec, labelText, 7, accentColor or C.Purple, Enum.Font.GothamBold)
+    tag.Size = UDim2.new(0,96,1,0); tag.Position = UDim2.new(0.5,-48,0,0)
+    tag.BackgroundColor3 = C.BG; tag.BackgroundTransparency = 0; tag.ZIndex = 4
+end
+
+local function makeBtn(yOff, h, labelText, accentCol)
+    local frame = Instance.new("Frame", main)
+    frame.Size = UDim2.new(1,-14,0,h); frame.Position = UDim2.new(0,7,0,yOff)
+    frame.BackgroundColor3 = C.Panel; frame.BorderSizePixel = 0; frame.ZIndex = 3
+    corner(frame, 10); stroke(frame, Color3.fromRGB(28,28,40))
+    local btn = Instance.new("TextButton", frame)
+    btn.Size = UDim2.new(1,-4,1,-4); btn.Position = UDim2.new(0,2,0,2)
+    btn.Text = labelText; btn.BackgroundColor3 = accentCol or Color3.fromRGB(28,28,38)
+    btn.BackgroundTransparency = 0.18; btn.Font = Enum.Font.GothamBold; btn.TextSize = 11
+    btn.TextColor3 = C.Neon; btn.BorderSizePixel = 0; btn.AutoButtonColor = false; btn.ZIndex = 4
+    corner(btn, 8)
+    btn.MouseEnter:Connect(function() tw(btn,{BackgroundTransparency=0},0.12) end)
+    btn.MouseLeave:Connect(function() tw(btn,{BackgroundTransparency=0.18},0.12) end)
+    return btn
+end
+
+local function makeStatus(yOff, text, col)
+    local frame = Instance.new("Frame", main)
+    frame.Size = UDim2.new(1,-14,0,22); frame.Position = UDim2.new(0,7,0,yOff)
+    frame.BackgroundColor3 = C.Panel; frame.BorderSizePixel = 0; frame.ZIndex = 3
+    corner(frame, 6); stroke(frame, Color3.fromRGB(26,26,36), 0.8)
+    local l = lbl(frame, text, 9, col or C.Green, Enum.Font.Gotham)
+    l.Size = UDim2.new(1,0,1,0); l.ZIndex = 4
+    return l
+end
+
+-- ══════════ INSTA RESET ══════════
+makeSection(48, "── INSTA RESET ──", C.Cyan)
+local ResetBtn    = makeBtn(68, 32, "⚡  INSTA RESET", Color3.fromRGB(0,35,50))
+ResetBtn.TextColor3 = C.Cyan
+local ResetStatus = makeStatus(104, "● ACTIVE", C.Green)
+local kbLbl = lbl(main, "HOTKEY  [ R ]", 8, C.Dim, Enum.Font.Gotham)
+kbLbl.Size = UDim2.new(1,-14,0,16); kbLbl.Position = UDim2.new(0,7,0,130)
+kbLbl.BackgroundColor3 = C.Panel; kbLbl.BackgroundTransparency = 0.6; kbLbl.ZIndex = 3
+corner(kbLbl, 5)
+
+local function doReset()
+    if resetDebounce then return end; resetDebounce = true
+    local char = LocalPlayer.Character; if not char then resetDebounce=false; return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hum or not hrp or hum.Health<=0 then resetDebounce=false; return end
+    ResetBtn.Text = "..."; ResetStatus.Text = "● RESETTING"; ResetStatus.TextColor3 = C.Red
+    Camera.CameraSubject = nil
+    if charConn then charConn:Disconnect() end
+    charConn = LocalPlayer.CharacterAdded:Connect(function(nc)
+        charConn:Disconnect(); Camera.CameraSubject = nil
+        task.defer(function()
+            local nh = nc:WaitForChild("Humanoid",0.5)
+            if nh then Camera.CameraSubject = nh end
+        end)
+    end)
+    if cachedCraftCF then hrp.CFrame = cachedCraftCF
+    elseif craftMachine then updateCraftCache(); if cachedCraftCF then hrp.CFrame = cachedCraftCF end end
+    Players.RespawnTime = 0; hum.Health = 0
+    hum:ChangeState(Enum.HumanoidStateType.Dead); char:BreakJoints()
+    task.wait(0.03); pcall(function() LocalPlayer:LoadCharacter() end)
+    task.delay(0.3, function()
+        ResetBtn.Text = "⚡  INSTA RESET"
+        ResetStatus.Text = "● ACTIVE"; ResetStatus.TextColor3 = C.Green
+        resetDebounce = false
+    end)
+end
+ResetBtn.MouseButton1Click:Connect(doReset)
+UserInputService.InputBegan:Connect(function(inp,gp)
+    if not gp and inp.KeyCode == Enum.KeyCode.R then doReset() end
+end)
+
+-- ══════════ AUTO STEAL ══════════
+makeSection(154, "── AUTO STEAL ──", C.Green)
+local StealBtn    = makeBtn(174, 32, "🟢  START STEALING", Color3.fromRGB(10,45,20))
+StealBtn.TextColor3 = C.Green
+local StealStatus = makeStatus(210, "● IDLE", C.Dim)
+
+StealBtn.MouseButton1Click:Connect(function()
+    if stealEnabled then
+        setStealing(false)
+        StealBtn.Text = "🟢  START STEALING"; StealBtn.TextColor3 = C.Green
+        tw(StealBtn,{BackgroundColor3=Color3.fromRGB(10,45,20)},0.18)
+        StealStatus.Text = "● IDLE"; StealStatus.TextColor3 = C.Dim
+    else
+        setStealing(true)
+        StealBtn.Text = "🔴  STOP STEALING"; StealBtn.TextColor3 = C.Red
+        tw(StealBtn,{BackgroundColor3=Color3.fromRGB(55,10,10)},0.18)
+        StealStatus.Text = "● RUNNING"; StealStatus.TextColor3 = C.Green
+    end
+end)
+
+-- ══════════════════ ANIMATE HUB IN (right side) ══════════════════
+task.wait(0.1)
+tw(main,
+    {Size = UDim2.new(0, WIN_W, 0, WIN_H)},
+    0.55, Enum.EasingStyle.Back
+)
+
+-- ══════════════════════════════════════════════════════════
+--  AP SPAMMER  ·  left side, auto-refreshes on player join
+-- ══════════════════════════════════════════════════════════
+task.spawn(function()
+    task.wait(1)
+
+    local apGui = Instance.new("ScreenGui", CoreGui)
+    apGui.Name = "APSpammer_" .. math.random(1000,9999)
+    apGui.ResetOnSpawn = false
+    apGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+
+    local AP_W, AP_H = 210, 300
+
+    local apMain = Instance.new("Frame", apGui)
+    -- starts collapsed at the left-side final position
+    apMain.Size     = UDim2.new(0, 0, 0, 0)
+    apMain.Position = UDim2.new(0, 10, 0.5, -AP_H/2)
+    apMain.BackgroundColor3 = C.BG
+    apMain.BorderSizePixel = 0
+    apMain.Active = true; apMain.Draggable = true
+    apMain.ClipsDescendants = true
+    corner(apMain, 16)
+
+    local apStroke = stroke(apMain, C.Dim, 1.5)
+    animBorder(apStroke, C.Gold, Color3.fromRGB(255,255,200))
+
+    -- Header
+    local apHeader = Instance.new("Frame", apMain)
+    apHeader.Size = UDim2.new(1,0,0,38); apHeader.BackgroundColor3 = C.Header
+    apHeader.BorderSizePixel = 0; apHeader.ZIndex = 3
+    corner(apHeader, 16); stroke(apHeader, Color3.fromRGB(22,22,30))
+
+    local apl = Instance.new("Frame", apHeader)
+    apl.Size = UDim2.new(1,0,0,2); apl.Position = UDim2.new(0,0,1,-2)
+    apl.BackgroundColor3 = C.Gold; apl.BorderSizePixel = 0; apl.ZIndex = 4
+    local aplGrad = Instance.new("UIGradient", apl)
+    aplGrad.Color = ColorSequence.new{
+        ColorSequenceKeypoint.new(0,   Color3.new(0,0,0)),
+        ColorSequenceKeypoint.new(0.3, C.Gold),
+        ColorSequenceKeypoint.new(0.5, Color3.fromRGB(255,255,200)),
+        ColorSequenceKeypoint.new(0.7, C.Gold),
+        ColorSequenceKeypoint.new(1,   Color3.new(0,0,0)),
+    }
+    task.spawn(function()
+        while apl and apl.Parent do
+            for i = -1, 1, 0.01 do aplGrad.Offset = Vector2.new(i,0); task.wait() end
+        end
+    end)
+
+    local apTitle = lbl(apHeader, "⚡ AP SPAMMER", 13, C.Gold, Enum.Font.GothamBold)
+    apTitle.Size = UDim2.new(1,0,1,0); apTitle.ZIndex = 5
+
+    local apSub = lbl(apHeader, "click player = spam all cmds", 7, C.Dim, Enum.Font.Gotham)
+    apSub.Size = UDim2.new(1,0,0,10); apSub.Position = UDim2.new(0,0,1,-13); apSub.ZIndex = 5
+
+    local apClose = Instance.new("TextButton", apHeader)
+    apClose.Size = UDim2.new(0,22,0,22); apClose.Position = UDim2.new(1,-28,0.5,-11)
+    apClose.Text = "✕"; apClose.BackgroundColor3 = Color3.fromRGB(25,25,34)
+    apClose.TextColor3 = C.Dim; apClose.Font = Enum.Font.GothamBold; apClose.TextSize = 10
+    apClose.BorderSizePixel = 0; apClose.AutoButtonColor = false; apClose.ZIndex = 6
+    corner(apClose,6); stroke(apClose, Color3.fromRGB(40,40,55))
+    apClose.MouseEnter:Connect(function() tw(apClose,{BackgroundColor3=Color3.fromRGB(150,25,25)},0.15) end)
+    apClose.MouseLeave:Connect(function() tw(apClose,{BackgroundColor3=Color3.fromRGB(25,25,34)},0.15) end)
+    apClose.MouseButton1Click:Connect(function()
+        tw(apMain,{Size=UDim2.new(0,0,0,0)},0.28,Enum.EasingStyle.Quint)
+        task.wait(0.3); apGui:Destroy()
+    end)
+
+    -- Status
+    local apStatusFrame = Instance.new("Frame", apMain)
+    apStatusFrame.Size = UDim2.new(1,-14,0,22); apStatusFrame.Position = UDim2.new(0,7,0,44)
+    apStatusFrame.BackgroundColor3 = C.Panel; apStatusFrame.BorderSizePixel = 0; apStatusFrame.ZIndex = 3
+    corner(apStatusFrame,6); stroke(apStatusFrame, Color3.fromRGB(26,26,36), 0.8)
+    local apStatusLbl = lbl(apStatusFrame, "● READY", 9, C.Green, Enum.Font.Gotham)
+    apStatusLbl.Size = UDim2.new(1,0,1,0); apStatusLbl.ZIndex = 4
+
+    -- Spam nearest base owner button
+    local spamBtnFrame = Instance.new("Frame", apMain)
+    spamBtnFrame.Size = UDim2.new(1,-14,0,28); spamBtnFrame.Position = UDim2.new(0,7,0,70)
+    spamBtnFrame.BackgroundColor3 = C.Panel; spamBtnFrame.BorderSizePixel = 0; spamBtnFrame.ZIndex = 3
+    corner(spamBtnFrame,8); stroke(spamBtnFrame, Color3.fromRGB(28,28,40))
+    local spamBaseBtn = Instance.new("TextButton", spamBtnFrame)
+    spamBaseBtn.Size = UDim2.new(1,-4,1,-4); spamBaseBtn.Position = UDim2.new(0,2,0,2)
+    spamBaseBtn.Text = "💥  SPAM NEAREST BASE OWNER"
+    spamBaseBtn.BackgroundColor3 = Color3.fromRGB(50,35,0); spamBaseBtn.BackgroundTransparency = 0.18
+    spamBaseBtn.Font = Enum.Font.GothamBold; spamBaseBtn.TextSize = 9
+    spamBaseBtn.TextColor3 = C.Gold; spamBaseBtn.BorderSizePixel = 0
+    spamBaseBtn.AutoButtonColor = false; spamBaseBtn.ZIndex = 4
+    corner(spamBaseBtn,7)
+    spamBaseBtn.MouseEnter:Connect(function() tw(spamBaseBtn,{BackgroundTransparency=0},0.12) end)
+    spamBaseBtn.MouseLeave:Connect(function() tw(spamBaseBtn,{BackgroundTransparency=0.18},0.12) end)
+
+    spamBaseBtn.MouseButton1Click:Connect(function()
+        local char = LocalPlayer.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        if not hrp then
+            apStatusLbl.Text = "● NO CHARACTER"; apStatusLbl.TextColor3 = C.Red; return
+        end
+        local nearestPlot, nearestDist = nil, math.huge
+        local Plots = Workspace:FindFirstChild("Plots")
+        if Plots then
+            for _, plot in ipairs(Plots:GetChildren()) do
+                local sign = plot:FindFirstChild("PlotSign")
+                if sign then
+                    local yb = sign:FindFirstChild("YourBase")
+                    if not yb or not yb.Enabled then
+                        local part = sign:IsA("BasePart") and sign or sign:FindFirstChildWhichIsA("BasePart",true)
+                        if part then
+                            local d = (hrp.Position - part.Position).Magnitude
+                            if d < nearestDist then nearestDist = d; nearestPlot = plot end
+                        end
+                    end
+                end
+            end
+        end
+        if not nearestPlot then
+            apStatusLbl.Text = "● NO BASE FOUND"; apStatusLbl.TextColor3 = C.Red; return
+        end
+        local targetPlayer = nil
+        local sign2 = nearestPlot:FindFirstChild("PlotSign")
+        if sign2 then
+            local sg = sign2:FindFirstChildWhichIsA("SurfaceGui",true)
+            if sg then
+                for _, tl in ipairs(sg:GetDescendants()) do
+                    if tl:IsA("TextLabel") and tl.Text ~= "" then
+                        local nick = tl.Text:match("^(.-)'") or tl.Text
+                        for _, p in ipairs(Players:GetPlayers()) do
+                            if p.DisplayName == nick or p.Name == nick then
+                                targetPlayer = p; break
+                            end
+                        end
+                        if targetPlayer then break end
+                    end
+                end
+            end
+        end
+        if not targetPlayer or targetPlayer == LocalPlayer then
+            apStatusLbl.Text = "● OWNER NOT FOUND"; apStatusLbl.TextColor3 = C.Red; return
+        end
+        apStatusLbl.Text = "● SPAMMING "..targetPlayer.Name:upper():sub(1,10)
+        apStatusLbl.TextColor3 = C.Gold
+        task.spawn(function()
+            local count = 0
+            for _, cmd in ipairs(ALL_CMDS) do
+                local ok, res = pcall(runAdminCommand, targetPlayer, cmd)
+                if ok and res then count += 1 end
+                task.wait(0.15)
+            end
+            apStatusLbl.Text = "● SENT "..count.." CMDS → "..targetPlayer.Name:sub(1,10)
+            apStatusLbl.TextColor3 = C.Green
+            task.delay(3, function()
+                apStatusLbl.Text = "● READY"; apStatusLbl.TextColor3 = C.Green
+            end)
+        end)
+    end)
+
+    -- Players divider
+    local divFrame = Instance.new("Frame", apMain)
+    divFrame.Size = UDim2.new(1,-14,0,16); divFrame.Position = UDim2.new(0,7,0,102)
+    divFrame.BackgroundTransparency = 1; divFrame.ZIndex = 3
+    local divLine = Instance.new("Frame", divFrame)
+    divLine.Size = UDim2.new(1,0,0,1); divLine.Position = UDim2.new(0,0,0.5,0)
+    divLine.BackgroundColor3 = C.Gold; divLine.BackgroundTransparency = 0.65
+    divLine.BorderSizePixel = 0; divLine.ZIndex = 3
+    local divTag = lbl(divFrame, "PLAYERS", 7, C.Gold, Enum.Font.GothamBold)
+    divTag.Size = UDim2.new(0,60,1,0); divTag.Position = UDim2.new(0.5,-30,0,0)
+    divTag.BackgroundColor3 = C.BG; divTag.BackgroundTransparency = 0; divTag.ZIndex = 4
+
+    -- Scrollable list
+    local listBg = Instance.new("Frame", apMain)
+    listBg.Size = UDim2.new(1,-14,1,-126); listBg.Position = UDim2.new(0,7,0,120)
+    listBg.BackgroundColor3 = C.Panel; listBg.BorderSizePixel = 0; listBg.ZIndex = 3
+    corner(listBg, 8); stroke(listBg, Color3.fromRGB(26,26,36), 0.8)
+
+    local scroll = Instance.new("ScrollingFrame", listBg)
+    scroll.Size = UDim2.new(1,-4,1,-4); scroll.Position = UDim2.new(0,2,0,2)
+    scroll.BackgroundTransparency = 1; scroll.BorderSizePixel = 0
+    scroll.ScrollBarThickness = 3; scroll.ScrollBarImageColor3 = C.Gold
+    scroll.ScrollingDirection = Enum.ScrollingDirection.Y
+    scroll.CanvasSize = UDim2.new(0,0,0,0); scroll.ZIndex = 4
+    local listLayout = Instance.new("UIListLayout", scroll)
+    listLayout.Padding = UDim.new(0,4); listLayout.SortOrder = Enum.SortOrder.LayoutOrder
+
+    local playerRows = {}
+
+    local function refreshCanvas()
+        scroll.CanvasSize = UDim2.new(0,0,0, listLayout.AbsoluteContentSize.Y+6)
+    end
+
+    local function createRow(plr, isNew)
+        if playerRows[plr.UserId] then return end
+        if plr == LocalPlayer then return end
+
+        local row = Instance.new("TextButton", scroll)
+        row.Name = "row_"..plr.UserId
+        row.Size = UDim2.new(1,0,0,36); row.BackgroundColor3 = C.Frame
+        row.BackgroundTransparency = 0.2; row.BorderSizePixel = 0
+        row.AutoButtonColor = false; row.Text = ""; row.ZIndex = 5
+        corner(row, 6)
+        local rs = stroke(row, Color3.fromRGB(40,40,55))
+
+        local thumb = Instance.new("ImageLabel", row)
+        thumb.Size = UDim2.new(0,28,0,28); thumb.Position = UDim2.new(0,4,0.5,-14)
+        thumb.BackgroundColor3 = Color3.fromRGB(15,15,20); thumb.ZIndex = 6
+        pcall(function()
+            thumb.Image = Players:GetUserThumbnailAsync(plr.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size48x48)
+        end)
+        corner(thumb, 50); stroke(thumb, C.Gold, 1.5)
+
+        local nameLabel = lbl(row, plr.DisplayName, 11, C.Text, Enum.Font.GothamBold, Enum.TextXAlignment.Left)
+        nameLabel.Size = UDim2.new(1,-42,0,16); nameLabel.Position = UDim2.new(0,38,0,5)
+        nameLabel.TextTruncate = Enum.TextTruncate.AtEnd; nameLabel.ZIndex = 6
+
+        local userLabel = lbl(row, "@"..plr.Name, 8, C.Dim, Enum.Font.Gotham, Enum.TextXAlignment.Left)
+        userLabel.Size = UDim2.new(1,-42,0,12); userLabel.Position = UDim2.new(0,38,0,21)
+        userLabel.TextTruncate = Enum.TextTruncate.AtEnd; userLabel.ZIndex = 6
+
+        if isNew then
+            local badge = Instance.new("Frame", row)
+            badge.Size = UDim2.new(0,28,0,14); badge.Position = UDim2.new(1,-32,0,5)
+            badge.BackgroundColor3 = C.Green; badge.BorderSizePixel = 0; badge.ZIndex = 7
+            corner(badge, 4)
+            local bl = lbl(badge, "NEW", 7, Color3.new(0,0,0), Enum.Font.GothamBold)
+            bl.Size = UDim2.new(1,0,1,0); bl.ZIndex = 8
+            task.delay(5, function()
+                if badge and badge.Parent then
+                    tw(badge,{BackgroundTransparency=1},0.5)
+                    task.wait(0.5); if badge and badge.Parent then badge:Destroy() end
+                end
+            end)
+        end
+
+        row.MouseEnter:Connect(function()
+            tw(row,{BackgroundTransparency=0},0.1); rs.Color = C.Gold
+        end)
+        row.MouseLeave:Connect(function()
+            tw(row,{BackgroundTransparency=0.2},0.1); rs.Color = Color3.fromRGB(40,40,55)
+        end)
+        row.MouseButton1Click:Connect(function()
+            apStatusLbl.Text = "● SPAMMING "..plr.Name:upper():sub(1,10)
+            apStatusLbl.TextColor3 = C.Gold
+            task.spawn(function()
+                local n = spamAllCmds(plr)
+                apStatusLbl.Text = "● SENT "..n.." CMDS → "..plr.Name:sub(1,10)
+                apStatusLbl.TextColor3 = C.Green
+                task.delay(3, function()
+                    apStatusLbl.Text = "● READY"; apStatusLbl.TextColor3 = C.Green
+                end)
+            end)
+        end)
+
+        playerRows[plr.UserId] = row
+        refreshCanvas()
+    end
+
+    local function removeRow(plr)
+        local row = playerRows[plr.UserId]
+        if row and row.Parent then row:Destroy() end
+        playerRows[plr.UserId] = nil
+        refreshCanvas()
+    end
+
+    -- Populate existing players
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer then createRow(p, false) end
+    end
+
+    -- Auto-refresh on join
+    Players.PlayerAdded:Connect(function(plr)
+        task.wait(0.3)
+        if not plr or not plr.Parent then return end
+        createRow(plr, true)
+        apStatusLbl.Text = "● "..plr.Name:upper().." JOINED"
+        apStatusLbl.TextColor3 = C.Cyan
+        task.delay(3, function()
+            if apStatusLbl then apStatusLbl.Text = "● READY"; apStatusLbl.TextColor3 = C.Green end
+        end)
+    end)
+
+    Players.PlayerRemoving:Connect(removeRow)
+    listLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(refreshCanvas)
+
+    -- Animate AP panel in from left
+    tw(apMain,
+        {Size = UDim2.new(0, AP_W, 0, AP_H)},
+        0.55, Enum.EasingStyle.Back
+    )
+end)
+
+print("[HeroHub · beaniegooners] Loaded — Reset | Steal | AP Spammer")
